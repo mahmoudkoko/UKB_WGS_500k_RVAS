@@ -1,0 +1,1 @@
+/WGS/chr3/vep_input/ukb24308_c3_b516.qc.sites.vcf.gz

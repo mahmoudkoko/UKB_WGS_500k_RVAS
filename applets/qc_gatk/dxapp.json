@@ -1,0 +1,55 @@
+{
+  "name": "ukb23374_wgs_qc_applet",
+  "title": "GraphTyper WGS QC Applet",
+  "summary": "WGS QC applet. Takes a list of vcf file IDs or paths in a single file. Runs a bunch of pre-defined filters. Creates plink2 files, sites-only vcfs, variant counts per sample, and quality scores per variant.",
+  "version": "1.0.0",
+  "inputSpec":
+    [
+      {
+        "name": "ukb23374_vcf_list",
+        "label": "VCF list",
+        "help": "Input file ID (hash file-xxxxx). Contains a list of vcf file IDs or full paths from field 23374, one per line",
+        "class": "file",
+        "optional": false
+      },
+      {
+        "name": "mem_per_vcf",
+        "label": "RAM per VCF",
+        "help": "Used to determine how many VCFs to process in parallel",
+        "class": "int",
+        "default": 4,
+        "optional": true
+      }
+    ],
+  "outputSpec":
+    [
+      {
+        "name": "qc_log_files",
+        "label": "Log files",
+        "help": "Text file with concatenated STDERR files.",
+        "class": "array:file",
+         "patterns": ["*.validation.log","*.qc.log"],
+        "optional": false
+      },
+      {
+        "name": "qc_output_files",
+        "label": "Output files",
+        "help": "Nine files per VCF: Plink2 PGEN file set (pgen, pvar, psam.gz) under /pfiles), bed file (bed) and indexed sites-only BCF (bcf, bcf.csi) under /sites, tables of variant scores (tsv.gz) and per-sample variant counts (tsv.gz) under /stats, and a list of these qc outputs (txt) under /logs",
+        "class": "array:file",
+        "patterns": ["*.qc.pgen","*.qc.pvar.zst","*.qc.psam.gz","*.qc.log","*.qc.bed","*.qc.sites.bcf","*.qc.sites.bcf.csi","*.qc.sample_stats.tsv.gz","*.qc.geno_counts.tsv.gz","*.qc.quality_scores.tsv.gz",".qc.outputs.txt"],
+        "optional": true
+
+      }
+    ],
+  "runSpec":
+    {
+      "file": "src/main.sh",
+      "interpreter": "bash" ,
+      "systemRequirements": {"*": {"instanceType": "mem1_ssd1_v2_x36"} },
+      "distribution": "Ubuntu",
+      "release": "24.04",
+      "version": "0",
+      "execDepends": [{"name": "parallel"}]
+    },
+  "openSource": false
+}

@@ -1,0 +1,57 @@
+{
+  "name": "ukb_cadd_applet",
+  "title": "CADD Annotation Applet",
+  "summary": "WGS annotation applet. Takes a list of VCFs. Runs a bunch of pre-defined annotations. Creates TSV annotation files.",
+  "version": "1.0.0",
+  "inputSpec":
+    [
+      {
+        "name": "input_vcfs",
+        "label": "Input vcf file IDs",
+        "help": "Array of vcf file IDs",
+        "class": "array:file",
+        "optional": false
+      },
+      {
+        "name": "cadd_jobs",
+        "label": "Parallel jobs",
+        "help": "Number of files to process in parallel",
+        "class": "int",
+        "default": 5,
+        "optional": true
+      }
+    ],
+  "outputSpec":
+    [
+      {
+        "name": "cadd_log",
+        "label": "Log file",
+        "help": "Job log: a text file with summaries and concatenated STDERR files",
+        "class": "file",
+        "patterns": ["*.log"],
+        "optional": true
+      },
+      {
+        "name": "cadd_scores",
+        "label": "Output files",
+        "help": "One tsv file per input VCF",
+        "class": "array:file",
+        "patterns": [".tsv.gz"],
+        "optional": true
+
+      }
+    ],
+  "runSpec":
+    {
+      "file": "src/main.sh",
+      "interpreter": "bash" ,
+      "systemRequirements": {"*": {"instanceType": "mem1_ssd1_v2_x36"} },
+      "distribution": "Ubuntu",
+      "release": "24.04",
+      "version": "0",
+      "execDepends": [{"name": "parallel"}, {"name": "rpm2cpio"}]
+    },
+
+  "access": { "network": ["*"] },
+  "openSource": false
+}
