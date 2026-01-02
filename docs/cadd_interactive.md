@@ -1,19 +1,177 @@
-# Annotating indels with CADD scores
+# Annotating VCFs with CADD scores interactively
+
+## Preparing CADD resources for offline annotation
+
+### Obtain the required annotation resources
+
+
+Create a directory in the target project
+
+
+```bash
+dx mkdir -p "project-GzKk3XjJZz4ZgXzP2v1029qB:/Resources/cadd_v1_7_data"
+```
+
+Use `url_fetcher` to download the prescored variants and annotation resources [listed here](https://cadd.gs.washington.edu/download). 
+
+
+Submit five jobs to download these to the project directory. It will take a while to finish downloading the largest file (>300GB)
+
+
+- Annotations (340GB)
+
+
+```bash
+dx run app-url_fetcher \
+-iurl="https://kircherlab.bihealth.org/download/CADD/v1.7/GRCh38/GRCh38_v1.7.tar.gz" \
+-ichecksum="205d3e702df3565efb424e2ca80c9d25" \
+--destination "project-GzKk3XjJZz4ZgXzP2v1029qB:/Resources/cadd_v1_7_data/" \
+--instance-type mem1_hdd1_v2_x4 \
+--priority high \
+--brief \
+-y
+```
+
+
+- SNVs (80GB)
+
+```bash
+dx run app-url_fetcher \
+-iurl="https://kircherlab.bihealth.org/download/CADD/v1.7/GRCh38/whole_genome_SNVs.tsv.gz" \
+-ichecksum="88577a55f1cd519d44e0f415ba248eb9" \
+--destination "project-GzKk3XjJZz4ZgXzP2v1029qB:/Resources/cadd_v1_7_data/" \
+--instance-type mem1_hdd1_v2_x2 \
+--brief \
+-y
+```
+
+- SNVs (index file)
+
+
+```bash
+dx run app-url_fetcher \
+-iurl="https://kircherlab.bihealth.org/download/CADD/v1.7/GRCh38/whole_genome_SNVs.tsv.gz.tbi" \
+-ichecksum="347df8fac17ea374c4598f4f44c7ce8b" \
+--destination "project-GzKk3XjJZz4ZgXzP2v1029qB:/Resources/cadd_v1_7_data/" \
+--instance-type mem1_hdd1_v2_x2 \
+--brief \
+-y
+```
+
+- Indels (1.2GB)
+
+
+```bash
+dx run app-url_fetcher \
+-iurl="https://kircherlab.bihealth.org/download/CADD/v1.7/GRCh38/gnomad.genomes.r4.0.indel.tsv.gz" \
+-ichecksum="4b9c685c96d396af4d001c2f7dd9d8f9" \
+--destination "project-GzKk3XjJZz4ZgXzP2v1029qB:/Resources/cadd_v1_7_data/" \
+--instance-type mem1_hdd1_v2_x2 \
+--brief \
+-y
+```
+
+- Indels (index file)
+
+
+```bash
+dx run app-url_fetcher \
+-iurl="https://kircherlab.bihealth.org/download/CADD/v1.7/GRCh38/gnomad.genomes.r4.0.indel.tsv.gz.tbi" \
+-ichecksum="85f3d2daa9202c5915c0ce0f1c749a66" \
+--destination "project-GzKk3XjJZz4ZgXzP2v1029qB:/Resources/cadd_v1_7_data/" \
+--instance-type mem1_hdd1_v2_x2 \
+--brief \
+-y
+```
 
 
 
 
+### Set up and test CADD
+
+Start a VM with cloud workstation or ttyd. Choose large storage > 500 GB
+
+
+```bash
+dx run app-cloud_workstation \
+--priority high \
+--instance-type mem1_hdd1_v2_x8 \
+--ssh \
+--brief \
+-imax_session_length="3h" \
+-y
+```
+
+
+Install tabix, bcftools, and parallel
+
+
+```bash
+sudo apt install -y tabix bcftools parallel
+```
+
+Download singularity source
+
+
+```bash
+wget https://github.com/apptainer/apptainer/releases/download/v1.4.1/apptainer_1.4.1_amd64.deb
+```
+
+
+Install singularity
+
+
+```bash
+sudo apt install -y ./apptainer_1.4.1_amd64.deb
+```
+
+
+Download conda installation script
+
+
+```bash
+curl -L -O "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh"
+```
+
+Install conda
+
+
+```bash
+chmod +x ./Miniforge3-Linux-x86_64.sh
+```
+
+
+```bash
+sudo ./Miniforge3-Linux-x86_64.sh -u -b -p /usr/local/
+```
+
+
+Download CADD's docker image and convert it to singularity image. This will take about half an hour; redirect the stderr and stdout to a log file while working in the background.
+
+
+```bash
+apptainer build CADD_v1_7.sif docker://visze/cadd-scripts-v1_7:0.1.1 >> sif_build.log 2>&1  &
+```
+
+
+Once done, upload to the project directory for future use
+
+
+```bash
+dx upload -p --path "$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/containers/" CADD_v1_7.sif
+```
 
 
 
+Clone CADD scripts
+
+
+```bash
+git clone https://github.com/kircherlab/CADD-scripts.git
+```
 
 
 
-
-
-
-
-- Pre-scored SNVs and indels (83GB)
 
 
 ```bash
@@ -25,18 +183,9 @@ dx download -o ./data/prescored/GRCh38_v1.7/no_anno/ \
 ```
 
 
-
-- CADD docker image which we created earlier (8GB)
-
-
-```bash
-dx download -o ./sif/ \
-"$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/CADD_v1_7.sif" 
-```
-
-
-
+4. 
 If everything is set up correctly, cadd should be accessible from the command line.
+
 
 
 To run the test file that comes with it:
@@ -49,6 +198,206 @@ The result will be here
 ```bash
 zcat ./test/input.tsv.gz
 ```
+
+
+To run the test file that comes with it:
+
+```bash
+./CADD.sh ./test/input.vcf.gz
+```
+
+The result will be here
+```bash
+zcat ./test/input.tsv.gz
+```
+
+
+
+
+To use the SIF image created above, we will edit the config file of snakemake to point to the local file `${CADD}/data/containers/CADD_v1_7.sif` rather than an online docker repository
+
+
+```bash
+sed -i -e 's/containerized: "docker:.*"/containerized: "${CADD}\/data\/containers\/CADD_v1_7.sif"/' ./CADD-scripts/Snakefile
+```
+
+
+
+Edit the wrapper script 'CADD.sh' to remove dependency on path. This will make two changes (1) replace relative path with `/usr/local/bin/` to run from path (2) add an argument to bind the CADD directory when using apptainer (signularity) to run CADD.
+
+
+```bash
+sed \
+-e 's/export CADD=.*/export CADD="\/usr\/local\/bin\/cadd"/' \
+-e 's/--bind ${TMP_FOLDER}/--bind ${TMP_FOLDER} --bind ${CADD}/' \
+-i ./CADD-scripts/CADD.sh
+```
+
+Copy the wrapper to the destination `usr/local/bin/`
+
+
+```bash
+sudo cp CADD-scripts/CADD.sh /usr/local/bin/cadd
+```
+
+
+
+This will make CADD available from PATH by default
+
+
+```bash
+cadd --help
+```
+
+
+
+
+
+
+
+Download the prescored variants locally
+
+`./data/prescored/GRCh38_v1.7/no_anno/`
+
+
+```bash
+dx download  \
+"$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/whole_genome_SNVs.tsv.gz" \
+"$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/whole_genome_SNVs.tsv.gz.tbi" \
+"$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/gnomad.genomes.r4.0.indel.tsv.gz" \
+"$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/gnomad.genomes.r4.0.indel.tsv.gz.tbi" 
+```
+
+
+
+
+
+
+```bash
+cp -r ./CADD-scripts/Snakefile ./CADD-scripts/config CADD-scripts/envs CADD-scripts/schemas CADD-scripts/src ~/
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```bash
+mkdir cadd_docker && cd cadd_docker
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```bash
+cat > Dockerfile <<EOL
+FROM ubuntu:24.04
+
+# Install base tools
+RUN apt-get update && apt-get install -y \\
+    build-essential \\
+    wget \\
+    curl \\
+    python3 \\
+    python3-pip \\
+    tabix \\
+    bcftools \\
+    parallel \\
+    && apt-get clean
+
+
+# Conda
+COPY Miniforge3-Linux-x86_64.sh /tmp/pacakges/Miniforge3-Linux-x86_64.sh
+RUN /bin/bash /tmp/pacakges/Miniforge3-Linux-x86_64.sh -u -b -p /usr/local/
+
+# Snakemake
+RUN conda config --set channel_priority strict
+RUN conda install -p /usr/local/ -y -c conda-forge -c bioconda 'snakemake=8'
+
+
+# Singularity
+COPY apptainer_1.4.1_amd64.deb /tmp/pacakges/apptainer_1.4.1_amd64.deb
+RUN apt install -y /tmp/pacakges/apptainer_1.4.1_amd64.deb
+
+# CADD
+COPY CADD-scripts /opt/cadd
+COPY CADD-scripts/CADD.sh /usr/local/bin/
+
+
+
+# Clean up
+RUN rm -rf /tmp/packages/ && \\
+    apt-get clean && \\
+    rm -rf /var/lib/apt/lists/*
+
+
+# Set default command
+CMD ["/bin/bash"]
+EOL
+```
+
+
+```bash
+docker build -f ./Dockerfile -t cadd-scripts .
+```
+
+
+
+1. Start a VM with `Cloud Workstation` or `ttyd`. 
+
+
+
+```bash
+dx run \
+--priority high \
+--instance-type mem1_ssd2_v2_x8 \
+--ssh app-cloud_workstation \
+--brief \
+-y
+```
+
+
+2. Clone the scripts
+
+
+```bash
+git clone https://github.com/kircherlab/CADD-scripts.git
+```
+
+
+2. Download CADD singularity image (8GB)
+
+
+```bash
+dx download -o ./sif/ \
+"$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/CADD_v1_7.sif" 
+```
+
+3. Download pre-scored variants (83GB)
+
 
 
 
@@ -301,4 +650,4 @@ Create a file list for parallel downloads
 	# "\$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/whole_genome_SNVs.tsv.gz.tbi"
 
 
-````
+```
