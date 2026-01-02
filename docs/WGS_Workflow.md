@@ -1,6 +1,9 @@
 # WGS Workflow
 
 
+
+
+
 Submit with 40GB RAM (applet requires 8-14 per file; 40 for 4 files). It should take ~4hrs to finish and will cost ~£3.5 on high priority (to avoid interuptions).
 
 ```bash
