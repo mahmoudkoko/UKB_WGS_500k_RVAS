@@ -2,21 +2,29 @@
 
 ## Preparing CADD resources for offline annotation
 
-### Obtain the required annotation resources
+### Obtaining the required annotation resources
 
 
 Create a directory in the target project
 
+On the GUI, use 'Add' to create directories. 
+
+In CLI:
 
 ```bash
 dx mkdir -p "project-GzKk3XjJZz4ZgXzP2v1029qB:/Resources/cadd_v1_7_data"
 ```
 
-Use `url_fetcher` to download the prescored variants and annotation resources [listed here](https://cadd.gs.washington.edu/download). 
+Use URL Fetcher (`url_fetcher`) to download the prescored variants and annotation resources [listed here](https://cadd.gs.washington.edu/download). 
 
 
 Submit five jobs to download these to the project directory. It will take a while to finish downloading the largest file (>300GB)
 
+Use DX client from CLI or URL Fetcher GUI.
+
+In the GUI, provide the links and checksum hashes.
+
+In CLI:
 
 - Annotations (340GB)
 
@@ -86,7 +94,6 @@ dx run app-url_fetcher \
 
 
 
-
 ### Set up and test CADD
 
 Start a VM with cloud workstation or ttyd. Choose large storage > 500 GB
@@ -102,13 +109,174 @@ dx run app-cloud_workstation \
 -y
 ```
 
+Load docker image
+
+```bash
+docker run -it --name CADD-1_7-staging visze/cadd-scripts-v1_7:0.1.1 /bin/bash
+```
+
+```bash
+docker run -it --name CADD-1_7-stage debian:bookworm-slim /bin/bash
+```
+
+You will be root.
+
+
 
 Install tabix, bcftools, and parallel
 
 
 ```bash
-sudo apt install -y tabix bcftools parallel
+apt update; apt install -y tabix bcftools parallel git
 ```
+
+
+
+Download conda installation script
+
+
+```bash
+wget "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh"
+```
+
+Install conda
+
+
+```bash
+chmod +x ./Miniforge3-Linux-x86_64.sh
+```
+
+
+```bash
+./Miniforge3-Linux-x86_64.sh -u -b
+```
+
+
+
+
+Clone CADD scripts
+
+
+```bash
+git clone https://github.com/kircherlab/CADD-scripts.git
+```
+
+
+```bash
+mv CADD-scripts /opt/CADD
+```
+
+
+To use the SIF image created above, we will edit the config file of snakemake to point to the local file `${CADD}/src/sif/CADD_v1_7.sif` rather than an online docker repository
+
+
+```bash
+sed -i -e 's/containerized: "docker:.*"/containerized: "${CADD}\/src\/sif\/CADD_v1_7.sif"/' /opt/CADD/Snakefile
+```
+
+
+Edit the wrapper script 'CADD.sh' to remove dependency on path. This will make two changes (1) replace relative path with `/opt/CADD/` (2) add an argument to bind the CADD directory when using apptainer (signularity) to run CADD.
+
+
+```bash
+sed -i -e 's/export CADD=.*/export CADD="\/opt\/CADD"/' -e 's/--bind ${TMP_FOLDER}/--bind ${TMP_FOLDER} --bind ${CADD}/' /opt/CADD/CADD.sh
+```
+
+Copy the wrapper to the destination `/opt/conda/bin/`
+
+
+```bash
+cp /opt/CADD/CADD.sh /opt/conda/bin/run_cadd
+```
+
+
+
+This will make CADD available from PATH by default
+
+
+```bash
+run_cadd --help
+```
+
+Now move to installing other dependencies
+
+
+Install snakemake
+
+
+```bash
+conda install -c conda-forge -c bioconda 'snakemake=8'
+```
+
+Install singularity
+
+```bash
+conda install -c conda-forge -c bioconda 'apptainer'
+```
+
+
+```bash
+exit
+```
+
+Save the updated docker image 
+
+
+```bash
+docker commit CADD-1_7-staging cadd-v1_7
+```
+
+Remove the staging image
+
+```bash
+docker rm CADD-1_7-staging
+```
+
+
+Test
+
+```bash
+docker run \
+--pull=never \
+--platform linux/amd64 \
+--volume /home/dnanexsus/sif/CADD_v1_7.sif:/opt/CADD/src/sif/CADD.sif \
+cadd-v1_7 \
+run_cadd //opt/CADD/test/input.vcf.gz
+```
+
+
+
+```bash
+dx download "project-GzKk3XjJZz4ZgXzP2v1029qB:/Resources/cadd_v1_7_data/containers/CADD_v1_7.sif"
+```
+
+
+
+
+
+To run the test file that comes with it:
+
+```bash
+run_cadd /opt/CADD/test/input.vcf.gz
+```
+
+The result will be here
+
+```bash
+zcat ./test/input.tsv.gz
+```
+
+
+
+
+
+
+
+
+
+
+
+
 
 Download singularity source
 
@@ -122,29 +290,8 @@ Install singularity
 
 
 ```bash
-sudo apt install -y ./apptainer_1.4.1_amd64.deb
+apt install -y ./apptainer_1.4.1_amd64.deb
 ```
-
-
-Download conda installation script
-
-
-```bash
-curl -L -O "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh"
-```
-
-Install conda
-
-
-```bash
-chmod +x ./Miniforge3-Linux-x86_64.sh
-```
-
-
-```bash
-sudo ./Miniforge3-Linux-x86_64.sh -u -b -p /usr/local/
-```
-
 
 Download CADD's docker image and convert it to singularity image. This will take about half an hour; redirect the stderr and stdout to a log file while working in the background.
 
@@ -153,6 +300,11 @@ Download CADD's docker image and convert it to singularity image. This will take
 apptainer build CADD_v1_7.sif docker://visze/cadd-scripts-v1_7:0.1.1 >> sif_build.log 2>&1  &
 ```
 
+Later on this will be available for download
+
+```bash
+dx download "$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/containers/CADD_v1_7.sif"
+```
 
 Once done, upload to the project directory for future use
 
@@ -160,17 +312,6 @@ Once done, upload to the project directory for future use
 ```bash
 dx upload -p --path "$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/containers/" CADD_v1_7.sif
 ```
-
-
-
-Clone CADD scripts
-
-
-```bash
-git clone https://github.com/kircherlab/CADD-scripts.git
-```
-
-
 
 
 
@@ -187,67 +328,6 @@ dx download -o ./data/prescored/GRCh38_v1.7/no_anno/ \
 If everything is set up correctly, cadd should be accessible from the command line.
 
 
-
-To run the test file that comes with it:
-
-```bash
-./CADD.sh ./test/input.vcf.gz
-```
-
-The result will be here
-```bash
-zcat ./test/input.tsv.gz
-```
-
-
-To run the test file that comes with it:
-
-```bash
-./CADD.sh ./test/input.vcf.gz
-```
-
-The result will be here
-```bash
-zcat ./test/input.tsv.gz
-```
-
-
-
-
-To use the SIF image created above, we will edit the config file of snakemake to point to the local file `${CADD}/data/containers/CADD_v1_7.sif` rather than an online docker repository
-
-
-```bash
-sed -i -e 's/containerized: "docker:.*"/containerized: "${CADD}\/data\/containers\/CADD_v1_7.sif"/' ./CADD-scripts/Snakefile
-```
-
-
-
-Edit the wrapper script 'CADD.sh' to remove dependency on path. This will make two changes (1) replace relative path with `/usr/local/bin/` to run from path (2) add an argument to bind the CADD directory when using apptainer (signularity) to run CADD.
-
-
-```bash
-sed \
--e 's/export CADD=.*/export CADD="\/usr\/local\/bin\/cadd"/' \
--e 's/--bind ${TMP_FOLDER}/--bind ${TMP_FOLDER} --bind ${CADD}/' \
--i ./CADD-scripts/CADD.sh
-```
-
-Copy the wrapper to the destination `usr/local/bin/`
-
-
-```bash
-sudo cp CADD-scripts/CADD.sh /usr/local/bin/cadd
-```
-
-
-
-This will make CADD available from PATH by default
-
-
-```bash
-cadd --help
-```
 
 
 
@@ -313,7 +393,7 @@ mkdir cadd_docker && cd cadd_docker
 
 
 ```bash
-cat > Dockerfile <<EOL
+cat > Dockerfile <EOL
 FROM ubuntu:24.04
 
 # Install base tools
@@ -488,7 +568,7 @@ The log files should also be uplodaded as a single record
 echo "==== Summary ==== " >> "${HOME}/out/cadd_log/${DX_JOB_ID}.cadd.log"
 
 cat "${HOME}/parallel_dir/parallel.log"  |\
-awk -F"\t" 'BEGIN{t=0;f=0;s=0}NR>1{t+=$4}NR>1{if($7==0) ++s ; else ++f}END{print "Pass/Fail: " s"/"f ; printf "Avergage time: %.2fmin\n", t/(NR-1)/60 }' >> "${HOME}/out/cadd_log/${DX_JOB_ID}.cadd.log"
+awk -F"\t" 'BEGIN{t=0;f=0;s=0}NR1{t+=$4}NR>1{if($7==0) ++s ; else ++f}END{print "Pass/Fail: " s"/"f ; printf "Avergage time: %.2fmin\n", t/(NR-1)/60 }' >> "${HOME}/out/cadd_log/${DX_JOB_ID}.cadd.log"
 
 
 echo "==== Parallel ==== " >> "${HOME}/out/cadd_log/${DX_JOB_ID}.cadd.log"
