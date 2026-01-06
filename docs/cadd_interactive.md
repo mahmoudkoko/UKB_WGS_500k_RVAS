@@ -194,11 +194,11 @@ Update APT repos
 apt update
 ```
 
-Install `wget`, `git`, `tabix`, `bcftools`, and `parallel`
+Install `wget`,`fuse2fs`, `git`, `tabix`, `bcftools`, and `parallel`
 
 
 ```bash
-apt install -y tabix bcftools parallel git wget
+apt install -y tabix bcftools parallel git wget fuse2fs
 ```
 
 
@@ -244,11 +244,6 @@ run_cadd --help
 
 Second, edit the config file to use an SIF image from a local directory rather than pulling a docker image from `docker://`. 
 
-Create the directory
-
-```bash
-mkdir /opt/CADD/src/sif
-```
 
 Edit the config file to point to a local file `${CADD}/src/sif/CADD_v1_7.sif`
 
@@ -345,7 +340,7 @@ Now run cadd from the singularity image
 ```bash
 singularity exec \
 --writable-tmpfs \
---bind /tmp/CADD_v1_7.sif:/opt/CADD/src/sif/CADD_v1_7.sif \
+--bind /tmp/:/opt/CADD/src/sif/ \
 /tmp/CADD_scripts_v1_7.sif \
 run_cadd "/opt/CADD/test/input.vcf.gz"
 ```
@@ -405,7 +400,7 @@ dx run app-cloud_workstation \
 --instance-type mem1_hdd1_v2_x8 \
 --ssh \
 --brief \
--imax_session_length="3h" \
+-imax_session_length="4h" \
 -y
 ```
 
@@ -414,7 +409,7 @@ dx run app-cloud_workstation \
 Create a directory for the annotations and singularity images
 
 ```bash
-mkdir -p ${HOME}/cadd_dir/cadd_v1_7_data
+mkdir -p ${HOME}/cadd_working_dir/cadd_v1_7_data
 ```
 
 At the beginning we made sure to save the prescored variants under the same dir structure expected by CADD; our files in RAP are saved in `/Resources/cadd_v1_7_data/prescored/GRCh38_v1.7/no_anno/`.
@@ -424,30 +419,36 @@ We will download the folder `prescored`
 ```bash
 dx download "$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/prescored" \
 --recursive \
--o "${HOME}/cadd_dir/cadd_v1_7_data/" 
+-o "${HOME}/cadd_working_dir/cadd_v1_7_data/" 
 ```
 
 
 
-Now download the singularity images
+Now we will download the singularity images
 
 
 ```bash
 dx download "$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/containers" \
 --recursive \
--o "${HOME}/cadd_dir/cadd_v1_7_data/" 
+-o "${HOME}/cadd_working_dir/cadd_v1_7_data/" 
 ```
 
 
 
-The third thing is the annotations tarball. We will need to untar the file (340GB) after download (two passes) so instead of downloading it, we will read it with `cat` and pipe the output to `tar` to save some time (read once).
+The third thing we need to download is the annotations. After download, we will need to untar the `tar.gz` file (340GB), which means we need two passes over the file.
 
-This will reduce the time needed to ingest the annotations when running CADD again.
+Therefore, instead of downloading it, we will stream it with `cat` and pipe the output to `tar` to save some time (i.e., read once).
 
-Create a directory for the annotations and images
+This will reduce the time needed to ingest the annotations.
+
+Also, we will make sure that the annotations are saved in the correct path expected by CADD.
+
+The tar file contains a folder called `GRCh38` which needs to be under `${CADD}/data/annotations`, where `${CADD}` is the home directory for CADD scripts. 
+
+Create a directory for the annotations.
 
 ```bash
-mkdir -p ${HOME}/cadd_dir/cadd_v1_7_data/data/annotations/
+mkdir -p ${HOME}/cadd_working_dir/cadd_v1_7_data/annotations/
 ```
 
 
@@ -457,14 +458,19 @@ It takes an hour to download all files. We will redirect the file list to a text
 ```bash
 dx cat "$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/GRCh38_v1.7.tar.gz" |\
 gunzip |\
-tar -xvf - -C ${HOME}/cadd_dir/cadd_v1_7_data/data/annotations/ 2>&1 >> GRCh38_files.txt &
+tar -xvf - -C ${HOME}/cadd_working_dir/cadd_v1_7_data/annotations/ 2>&1 >> GRCh38_files.txt &
 ```
 
-To save time in the future, we will upload the untarred directory back to the platform.
+There is little practical value in keeping `tar.gz` format since the platform supports directory downloads. Also, having the data stored in the same structure that is required to run CADD makes streamlining the pipeline easier.
 
-DX upload is not parallelized. Instead, we will use the upload agent to upload these files in parallel
+To simplify the download process in the future, we will get rid of the tarball. Instead, we will upload the untarred directory back to the platform along with the prescored variants and singularity images. 
 
-The upload agent is a precompiled binary
+
+DX upload can take in a directory name as an input but it is not parallelized. 
+
+Instead, we will use another tool from DNANexsus called upload agent (`ua`) to upload these files in parallel. The upload agent does not support directory uploads so we will use the list of files we created with `tar -xv` to upload all files indiviually but in parallel.
+
+The upload agent is a precompiled binary. We will download it and move it to PATH.
 
 ```bash
 curl -O https://dnanexus-sdk.s3.amazonaws.com/dnanexus-upload-agent-1.5.33-linux.tar.gz
@@ -478,7 +484,7 @@ rm -rf dnanexus-upload-agent-1.5.33-linux.tar.gz dnanexus-upload-agent-1.5.33-li
 ua --help
 ```
 
-The upload agent doesnt support directory uploads.
+As noted, the upload agent doesnt support directory uploads.
 
 We will use the list of files to group them by directory, then upload the files in each directory. 
 
@@ -501,28 +507,51 @@ sort |\
 uniq)
 ```
 
-This bit loops over the directories and uploads files inside each directory in parallel
+We create a target directory in the analysis project
+
+```bash
+dx mkdir $DX_PROJECT_CONTEXT_ID:Resources/cadd_v1_7_data/annotations 
+```
+
+This bit loops over the local directories and uploads all the files inside each directory in parallel to a target directory with the same name
 
 ```bash
 for ((f=0;f<${#cadd_dirs[@]};++f)); do
 
-	echo "Uploading the following files:"
-	ls ./"${HOME}/cadd_dir/cadd_v1_7_data/data/annotations/${cadd_dirs[$f]}"/*
+	echo "Uploading the following files in:"
+	ls "${HOME}/cadd_working_dir/cadd_v1_7_data/annotations/${cadd_dirs[$f]}"
 
-	ua --do-not-compress --read-threads 4  --upload-threads 4 --project "$DX_PROJECT_CONTEXT_ID" --folder "/Resources/cadd_v1_7_data/${cadd_dirs[$f]}" ./"${HOME}/cadd_dir/cadd_v1_7_data/data/annotations/${cadd_dirs[$f]}"/*
+	ua \
+	--do-not-compress \
+	--read-threads 4  \
+	--upload-threads 4 \
+	--project "$DX_PROJECT_CONTEXT_ID" \
+	--folder "/Resources/cadd_v1_7_data/annotations/${cadd_dirs[$f]}" \
+	"${HOME}/cadd_working_dir/cadd_v1_7_data/data/annotations/${cadd_dirs[$f]}"/*
 
-done &
+done && echo 'Finished upload' &
 ```
 
-Again, this takes a while but hopefully faster than the download step
+Again, this takes a while but hopefully faster than the download step.
 
-In the future (e.g., inside a script), we will be able to download the full directory as follows (not needed now since we have the files already):
-
+This allows for downloading these files in the future with one pass (not needed now since we have the files locally already).
 
 ```bash
 dx download "$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/annotations" \
 --recursive \
 -o "${HOME}/cadd_dir/cadd_v1_7_data/" 
+```
+
+
+A more convenient approach to steamline the downloads (e.g., inside a script) is to download the full `data` directory as follows:
+
+
+```bash
+dx download "$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data" \
+--recursive \
+--no-progress \
+--lightweight \
+-o "${HOME}/cadd_working_dir/" 
 ```
 
 Now we have all the required inputs
@@ -547,348 +576,153 @@ sudo apt install -y ./apptainer_1.4.1_amd64.deb
 ```
 
 
-We will create a directory for the VCFs.
+We will now create a directory for the VCFs.
 
 
 ```bash
-mkdir ${HOME}/cadd_dir/cadd_vcfs
+mkdir ${HOME}/cadd_working_dir/input_vcfs
 ```
 
 We will copy the test file from inside the SIF image
 
 ```bash
 singularity exec \
-${HOME}/cadd_dir/cadd_v1_7_data/containers/CADD_scripts_v1_7.sif \
-cp /opt/CADD/test/input.vcf.gz ${HOME}/cadd_dir/cadd_vcfs/test.vcf.gz
+${HOME}/cadd_working_dir/cadd_v1_7_data/containers/CADD_scripts_v1_7.sif \
+cp /opt/CADD/test/input.vcf.gz ${HOME}/cadd_working_dir/input_vcfs/test.vcf.gz
 ```
 
 It has a few variants
 
 ```bash
-zcat ${HOME}/cadd_dir/cadd_vcfs/test.vcf.gz
+zcat ${HOME}/cadd_working_dir/input_vcfs/test.vcf.gz
 ```
 
 Now we will bind the directories and run CADD
 
 ```bash
 singularity exec \
---writable-tmpfs \
---bind ${HOME}/cadd_dir/cadd_vcfs:/opt/CADD/vcfs \
---bind ${HOME}/cadd_dir/cadd_v1_7_data/annotations:/opt/CADD/data/annotations \
---bind ${HOME}/cadd_dir/cadd_v1_7_data/prescored:/opt/CADD/data/prescored \
---bind ${HOME}/cadd_dir/cadd_v1_7_data/containers/CADD_v1_7.sif:/opt/CADD/src/sif/CADD_v1_7.sif \
-${HOME}/cadd_dir/cadd_v1_7_data/containers/CADD_scripts_v1_7.sif \
-run_cadd "/opt/CADD/vcfs/test.vcf.gz"
+#--writable-tmpfs \
+--bind ${HOME}/cadd_working_dir/input_vcfs:/opt/CADD/input_vcfs \
+--bind ${HOME}/cadd_working_dir/cadd_v1_7_data/annotations:/opt/CADD/data/annotations \
+--bind ${HOME}/cadd_working_dir/cadd_v1_7_data/prescored:/opt/CADD/data/prescored \
+--bind ${HOME}/cadd_working_dir/cadd_v1_7_data/containers:/opt/CADD/src/sif \
+${HOME}/cadd_working_dir/cadd_v1_7_data/containers/CADD_scripts_v1_7.sif \
+run_cadd "/opt/CADD/input_vcfs/test.vcf.gz"
 ```
 
-Check the results
+Check the results. You should see CADD raw and scaled scores
 
 ```bash
-zcat ${HOME}/cadd_dir/cadd_vcfs/test.tsv.gz
+zcat ${HOME}/cadd_working_dir/input_vcfs/test.tsv.gz
 ```
 
 
 3. **Automate CADD for multiple files**
 
-When running applets, it is possible to give an array of files IDs as an input which will be downloaded using `dx-download-all-inputs`. VCFs passed to the applet as inputs will be downloaded under `${HOME}/in/` .
-The path to these files will be saved in an array called `input_vcfs_path` 
-
-
-We will use `parallel` inside the singularity container to run all 25 files in parallel
+We can use `parallel` inside the singularity container to run several files
 
 First we need a temporary directory for parallel
 
 ```bash
-mkdir ${HOME}/parallel_dir/
+mkdir ${HOME}/cadd_working_dir/parallel/
 ```
 
-We will simulate 25 input files:
+We will simulate 10 input files:
 
 
 ```bash
-# initiate empty array
-input_vcfs_path=()
-cadd_vcfs_path=()
+for ((v=1;v<=10;++v)); do
 
-for ((v=0;v<=24;++v)); do
-	# Create a dir
-	mkdir -p ${HOME}/in/input_vcfs/${v}
+	cp ${HOME}/cadd_working_dir/input_vcfs/test.vcf.gz ${HOME}/cadd_working_dir/input_vcfs/${v}.vcf.gz
 
-	# Copy the VCF in this dir
-	cp ${HOME}/cadd_dir/cadd_vcfs/test.vcf.gz ${HOME}/in/input_vcfs/${v}/
-
-	# Update the input variable
-	input_vcfs_path[${v}]="${HOME}/in/input_vcfs/${v}/test.vcf.gz"
-	cadd_vcfs_path[${v}]="/opt/CADD/vcfs/${v}/test.vcf.gz"
 done
 
+printf "%s.vcf.gz\n" {1..10} > ${HOME}/cadd_working_dir/parallel/input_vcfs_list.txt
 ```
 
 
-We will write a list of input files as they will appear inside the 
 
-```bash
-printf "%s\n" ${cadd_vcfs_path[@]} > ${HOME}/parallel_dir/parallel_vcfs.txt
-```
-
-Set the number of jobs
-
-```bash
-N_JOBS=6
-```
-
-
-Run 
+Run (sequentially) 
 
 ```bash
 singularity exec \
---writable-tmpfs \
---bind ${HOME}/parallel_dir:/opt/CADD/parallel_dir \
---bind ${HOME}/in/input_vcfs:/opt/CADD/vcfs \
---bind ${HOME}/cadd_dir/cadd_v1_7_data/annotations:/opt/CADD/data/annotations \
---bind ${HOME}/cadd_dir/cadd_v1_7_data/prescored:/opt/CADD/data/prescored \
---bind ${HOME}/cadd_dir/cadd_v1_7_data/containers/CADD_v1_7.sif:/opt/CADD/src/sif/CADD_v1_7.sif \
-${HOME}/cadd_dir/cadd_v1_7_data/containers/CADD_scripts_v1_7.sif \
+#--writable-tmpfs \
+--bind ${HOME}/cadd_working_dir/parallel:/opt/CADD/parallel \
+--bind ${HOME}/cadd_working_dir/input_vcfs:/opt/CADD/input_vcfs \
+--bind ${HOME}/cadd_working_dir/cadd_v1_7_data/annotations:/opt/CADD/data/annotations \
+--bind ${HOME}/cadd_working_dir/cadd_v1_7_data/prescored:/opt/CADD/data/prescored \
+--bind ${HOME}/cadd_working_dir/cadd_v1_7_data/containers:/opt/CADD/src/sif \
+${HOME}/cadd_working_dir/cadd_v1_7_data/containers/CADD_scripts_v1_7.sif \
 parallel \
-        --jobs "$N_JOBS" \
-        --results "/opt/CADD/parallel_dir" \
-        --joblog "/opt/CADD/parallel_dir/parallel.log" \
-        --timeout 300 \
-        run_cadd :::: /opt/CADD/parallel_dir/parallel_vcfs.txt
+        --jobs 2 \
+        --results "/opt/CADD/parallel" \
+        --joblog "/opt/CADD/parallel/parallel.log" \
+        --timeout 600 \
+        run_cadd :::: /opt/CADD/parallel/input_vcfs_list.txt &
 ```
 
 
-We will move the outputs to their destination
-
-```bash
-# initiate empty array
-output_tabs_path=()
-
-for ((v=0;v<=24;++v)); do
-
-	# Check if output file exists
-	if [[ -f ${HOME}/in/input_vcfs/${v}/test.tsv.gz ]]; then
-
-		# Create a dir
-		mkdir -p ${HOME}/out/output_tabs/${v}
-
-		mv ${HOME}/in/input_vcfs/${v}/test.tsv.gz ${HOME}/out/output_tabs/${v}/
-
-		# Update the output variable
-		output_tabs_path[${v}]="${HOME}/out/output_tabs/${v}/test.tsv.gz"
-
-	else
-		echo "Failed file: ${HOME}/in/input_vcfs/${v}/test.tsv.gz"
-	fi
-
-done
-
-
-```
-
-
+Observe the memory and cores with `htop` to determine how to scale parallel jobs with the instance size.
 
 Average processing time
 
 ```bash
-cat ~/parallel_dir/parallel.log  |\
+cat ${HOME}/cadd_working_dir/parallel/parallel.log  |\
 awk 'NR>1{t+=$4;next}END{printf "%.2fmin\n", t/(NR-1)/60 }'
 ```
 
-(Quite slow ...)
+
+4. **Packing CADD in an applet**
 
 
-The outputs include a log file and several vep output files. 
+When running applets, it is possible to give an array of files IDs as an input.
 
+These files can be downloaded using `dx-download-all-inputs` where each file will be in a separate directory  under `${HOME}/in/`. The directory names will reflect the index in the input array. The path to these files will be saved in an array called `input_vcfs_path`. 
 
-Right now, the output is in the same input dir and needs to be relocated after deleting the input files.
+It is possible to cut the first 5 columns and use them as input for CADD (removing chr prefix). These can then be saved in CADD's working dir.
 
 
 ```bash
-mkdir -p ${HOME}/out/cadd_log/ ${HOME}/out/cadd_scores/
+mkdir -p ${HOME}/out/cadd_scores/
 
 for ((v=0;v<${#input_vcfs_path[@]};++v)); do
 
-	rm ${input_vcfs_path[$v]}
+	input_vcf_file=$(ls "${input_vcfs_path[$v]}/*.vcf.gz")
 
-	mv "${HOME}/in/input_vcfs/${v}" "${HOME}/out/cadd_scores/${v}"
+	zless "${input_vcfs_path[$v]}/${input_vcf_file}" |\
+	awk '{gsub(/^chr/,"",$1);gsub(/M/,"MT",$1);NF=5; print}' OFS="\t" |\
+	gzip > "${HOME}/cadd_working_dir/input_vcfs/${input_vcf_file}"
+
+	# Delete the input file
+	rm -rf ${input_vcfs_path[$v]}
+
+	# Update the path
+	${input_vcfs_path[$v]}="${HOME}/cadd_working_dir/input_vcfs/${input_vcf_file}"
+
 
 done
 ```
 
 
+A list of these files can then be passed to parallel as we have shown above.
+
+The output needs to be relocated to a new location under `${HOME}/out/`, each in its own directory, with numeric dir names to reflect the output array.
+
 
 ```bash
-# check
-find "${HOME}/out/cadd_scores/" -name *.tsv.gz -exec ls {} +
+mv ${HOME}/in/input_vcfs ${HOME}/out/cadd_scores
+
+for ((v=0;v<${#input_vcfs_path[@]};++v)); do
+
+	if [[ -f "${input_vcfs_path[$v]}" ]]; then
+		mv "${input_vcfs_path[$v]}" "${HOME}/out/cadd_scores/${v}/"
+	fi
+
+done
 ```
-
-The log files should also be uplodaded as a single record
-
-```bash
-echo "==== Summary ==== " >> "${HOME}/out/cadd_log/${DX_JOB_ID}.cadd.log"
-
-cat "${HOME}/parallel_dir/parallel.log"  |\
-awk -F"\t" 'BEGIN{t=0;f=0;s=0}NR1{t+=$4}NR>1{if($7==0) ++s ; else ++f}END{print "Pass/Fail: " s"/"f ; printf "Avergage time: %.2fmin\n", t/(NR-1)/60 }' >> "${HOME}/out/cadd_log/${DX_JOB_ID}.cadd.log"
-
-
-echo "==== Parallel ==== " >> "${HOME}/out/cadd_log/${DX_JOB_ID}.cadd.log"
-
-cat "${HOME}/parallel_dir/parallel.log" >> "${HOME}/out/cadd_log/${DX_JOB_ID}.cadd.log"
-
-echo "==== Logs ==== " >> "${HOME}/out/cadd_log/${DX_JOB_ID}.cadd.log"
-
-find "${HOME}/parallel_dir/" -name std* -exec cat {} + >> "${HOME}/out/cadd_log/${DX_JOB_ID}.cadd.log"
-
-```
-
 
 The outputs are ready for upload with `dx-upload-all-outputs`
 
 
 
 
-###
-
-
-
-
-
-
-
-
-Upload it to the project directory
-
-
-```bash
-dx upload CADD_v1_7.sif -p --path "$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_docker/"
-```
-
-
-
-### CADD scripts docker image
-
-
-
-
-
-### Test CADD
-
-
-Download precalulated CADD scores for gnomAD indels
-
-
-```bash
-curl -O https://kircherlab.bihealth.org/download/CADD/v1.7/GRCh38/gnomad.genomes.r4.0.indel.tsv.gz.tbi
-curl -O https://kircherlab.bihealth.org/download/CADD/v1.7/GRCh38/gnomad.genomes.r4.0.indel.tsv.gz
-```
-
-Move these files to their target location
-
-```bash
-mv gnomad.genomes.r4.0.indel.tsv.gz gnomad.genomes.r4.0.indel.tsv.gz.tbi CADD-scripts/data/prescored/GRCh38_v1.7/no_anno/
-```
-
-
-Download the annotation data (path may vary depending on where you saved the file)
-
-```bash
-dx download "$DX_PROJECT_CONTEXT_ID:/Resources/tmp_files/CADD_v1.7.tar.gz"
-```
-
-
-
-Once all are ready, move these files to their target location
-
-```bash
-mv GRCh38_v1.7 CADD-scripts/data/annotations/
-```
-
-
-
-
-Test CADD
-
-
-
-
-
-
-
-Save the folder as file. There is no point in using a compression filter. See top files here:
-
-
-```bash
-find CADD-scripts/ -type f -exec du -h {} \; |  sort -rh | head -n20
-```
-
-
-Compress with 7z to leverage multi-threading
-
-
-```bash
-7z a -mx=0 -ms=off -mmt=$(nproc) CADD_v1_7_data.7z CADD-scripts/
-
-7z a -mx=1 -mmt=10 CADD_v1_7_data2.7z CADD-scripts/ &
-
-```
-
-Upload
-
-
-```bash
-dx upload CADD_v1_7_data.7z -p --path "$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_docker/"
-```
-
-
-
-## Prepare docker image with conda and snakemake
-
-
-```bash
-
-# save image
-docker save cadd-scripts-v1_7 | gzip > vep_114_docker_amd64.tar.gz
-
-# Upload to RAP
-dx upload --brief -p --path $DX_PROJECT_CONTEXT_ID:/Resources/vep_114_docker/vep_114_docker_amd64.tar.gz vep_114_docker_amd64.tar.gz
-
-
-```
-
-
-
-
-```bash
-cd ..
-
-tar -cf - cadd_indels/ |\
-zstd -T4 -o CADD_indels_annotation_data.tar.zst
-```
-
-
-Create a file list for parallel downloads
-
-```bash
-
-	echo "Downloading docker image"
-
-	dx download --no-progress -o ./envs/ \\
-	"\$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/CADD_v1_7.sif" 
-
-
-	echo "Downloading precalculated gnomAD indels scores"
-
-	dx download --no-progress -o ./data/prescored/GRCh38_v1.7/no_anno/ \\
-	"\$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/gnomad.genomes.r4.0.indel.tsv.gz" \\
-	"\$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/gnomad.genomes.r4.0.indel.tsv.gz.tbi" 
-
-
-	# echo "Downloading precalculated WGS SNVs scores"
-
-	# dx download --no-progress -o ./data/prescored/GRCh38_v1.7/no_anno/ \\
-	# "\$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/whole_genome_SNVs.tsv.gz" \\
-	# "\$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/whole_genome_SNVs.tsv.gz.tbi"
-
-
-```
