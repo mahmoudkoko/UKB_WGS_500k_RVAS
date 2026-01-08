@@ -1,16 +1,25 @@
 {
   "name": "ukb_cadd_applet",
   "title": "CADD Annotation Applet",
-  "summary": "WGS annotation applet. Takes a list of VCFs. Runs a bunch of pre-defined annotations. Creates TSV annotation files.",
+  "summary": "WGS annotation applet. Takes an array of files. Runs CADD annotation. Creates compressed TSV annotation files.",
   "version": "1.0.0",
   "inputSpec":
     [
       {
-        "name": "input_vcfs",
-        "label": "Input vcf file IDs",
-        "help": "Array of vcf file IDs",
+        "name": "cadd_input",
+        "label": "Input file IDs",
+        "help": "Array of file IDs",
         "class": "array:file",
+        "patterns": [".vcf", ".vcf.gz", ".vcf.bgz", ".pvar", ".pvar.zst", ".pvar.zstd", ".bcf", ".tsv.gz", ".tsv"],
         "optional": false
+      },
+      {
+        "name": "cadd_dir",
+        "label": "CADD data directory",
+        "help": "CADD data directory on DNAnexus RAP platform",
+        "class": "string",
+        "default": "/Resources/cadd_v1_7_data",
+        "optional": true
       },
       {
         "name": "cadd_jobs",
