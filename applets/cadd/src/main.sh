@@ -1,34 +1,42 @@
 #!/bin/bash
 
-set -e -x -o pipefail
+set -euo pipefail
+set +x
 
-
-
-#########
-
-
-
-
-
-########
-
-mv ${HOME}/conda/Miniforge3-Linux-x86_64 ${HOME}/conda/Miniforge3-Linux-x86_64.sh
-
-bash ${HOME}/conda/Miniforge3-Linux-x86_64.sh -u -b -p ${HOME}/conda 2>&1 > /dev/null
-
-cat ${HOME}/conda/apptainer-install-unprivileged | bash -s - ${HOME}/conda/  2>&1 > /dev/null
-
-
-export PATH=${HOME}/conda/bin:${PATH}
-
-conda config --set channel_priority strict
-conda install -p ${HOME}/conda/ -y -c conda-forge -c bioconda 'snakemake=8' 2>&1 > /dev/null
-
-
-#########
 
 
 main() {
+
+# Install apptainer and source utilities.sh
+
+if ! sudo apt install -y /usr/local/assets/apptainer_1.4.1_amd64.deb; then
+	echo "ERROR: Failed to install apptainer" >&2
+	exit 1
+elif ! source /usr/local/scripts/utilities.sh; then
+	echo "ERROR: Failed to source utilities.sh" >&2
+	exit 1
+
+fi
+
+
+export CADD_DATA_DIR_REMOTE="/Resources/cadd_v1_7_data"
+
+
+
+prepare_cadd_vcfs (){
+
+	local vcf_file_id
+	local vcf_file_prefix
+	local cadd_vcfs=()
+	
+for (( vcf_idx = 0; vcf_idx < ${#input_vcfs[@]}; ++vcf_idx )); do
+
+	vcf_file_id=$(echo "${input_vcfs[$vcf_idx]}" | jq -r ."$dnanexus_link")
+	vcf_file_prefix="${input_vcfs_prefix[$vcf_idx]}"
+	
+	cadd_vcfs[$v]="${vcf_file_prefix}.cadd.vcf.gz"
+
+done
 
 
 # function to download data
@@ -76,47 +84,11 @@ export -f get_cadd_data_files
 
 
 
-get_cadd_data_file "envs/CADD_v1_7.sif"
 
-
-
-	# Move to cadd dir
-
-	cd "${HOME}/cadd_dir"
-
-	echo "Downloading annotations. This takes > 1hr"
-
-    # Download bundled annotations to target dur
-
-	dx cat "$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/GRCh38_v1.7.tar.gz" |\
-	gunzip |\
-	tar -xf - -C ./data/annotations/
-
-
-	dx download --no-progress -o ./data/prescored/GRCh38_v1.7/no_anno/ \
-#	"$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/whole_genome_SNVs.tsv.gz" \
-#	"$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/whole_genome_SNVs.tsv.gz.tbi" \
-	"$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/gnomad.genomes.r4.0.indel.tsv.gz" \
-	"$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/gnomad.genomes.r4.0.indel.tsv.gz.tbi" 
-
-
-	dx download --no-progress -o ./envs/ \
-	"$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/CADD_v1_7.sif" 
-
-	echo "Downloading Input VCFs"
-
-	# Download all inputs
-
-	dx-download-all-inputs --parallel
-
-
-export CADD_DATA_DIR_REMOTE="/Resources/cadd_v1_7_data"
 
 
 mkdir -p "${HOME}/parallel"
 
-
-mapfile -t cadd_files_list < <(dx cat "${DX_PROJECT_CONTEXT_ID}:${CADD_DATA_DIR_REMOTE}/CADD_v1_7_resources_list.txt" | sort | uniq | shuf)
 
 
 time parallel \
@@ -192,3 +164,58 @@ time parallel \
 
 	dx-upload-all-outputs
 }
+
+
+
+
+
+
+
+
+```bash
+parallel \
+
+	dx cat ${vcf_file_id} |\
+	gunzip - |\
+	awk -F'\t' '/^#/{gsub(/^chrM/,"MT",$1); gsub(/^chr/,"",$1); NF=5; print}' OFS="\t" |\
+	gzip > "${cadd_working_dir}/input_vcfs/${input_vcf_name}"
+
+}
+
+
+	${cadd_vcfs_path[$v]}="${cadd_working_dir}/input_vcfs/${input_vcf_file}"
+
+```
+
+
+A list of these files can then be passed to parallel as we have shown above.
+
+The output needs to be relocated to a new location under `${HOME}/out/`, each in its own directory, with numeric dir names to reflect the output array.
+
+
+```bash
+mv ${HOME}/in/input_vcfs ${HOME}/out/cadd_scores
+
+for ((v=0;v<${#input_vcfs_path[@]};++v)); do
+
+	if [[ -f "${input_vcfs_path[$v]}" ]]; then
+		mv "${input_vcfs_path[$v]}" "${HOME}/out/cadd_scores/${v}/"
+	fi
+
+done
+```
+
+The outputs are ready for upload with `dx-upload-all-outputs`
+
+
+
+Moreover, instead of downloading single directories, a more convenient approach to steamline the downloads (e.g., inside a script) will be to download the full `data` directory including prescored variants and annotations as follows:
+
+
+```bash
+dx download "$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data" \
+--recursive \
+--no-progress \
+--lightweight \
+-o "${cadd_working_dir}/" 
+```
