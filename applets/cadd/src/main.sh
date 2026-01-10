@@ -20,6 +20,23 @@ local job_num
 local log_file
 local escaped_path
 
+# Define CADD working directory
+cadd_working_dir="${HOME}/CADD"
+
+# Install apptainer
+if ! sudo apt-get install -y /usr/local/assets/apptainer_1.4.1_amd64.deb; then
+	echo "ERROR: Failed to install apptainer" >&2
+	exit 1
+# Source utility scripts
+elif ! source /usr/local/scripts/utilities.sh; then
+	echo "ERROR: Failed to source utilities.sh" >&2
+	exit 1
+# Create working directory
+elif ! mkdir -p "${cadd_working_dir}/input_vcfs" "${cadd_working_dir}/parallel_dir" ; then
+	log_message "ERROR: Failed to create CADD working directory"
+	exit 1
+fi
+
 # Read inputs and set up environment
 CADD_DATA_PROJECT=$(cat ${HOME}/job_input.json  | jq -r '.cadd_dir_project' || echo "null" )
 CADD_DATA_DIR=$(cat ${HOME}/job_input.json  | jq -r '.cadd_dir_path' || echo "null" )
@@ -43,23 +60,7 @@ if [[ "$CADD_JOBS" == "null" || -z "$CADD_JOBS" || "$CADD_JOBS" -le 0 ]]; then
 	CADD_JOBS=$((CADD_JOBS > 0 ? CADD_JOBS : 1))
 fi
 
-
-# Install apptainer
-if ! sudo apt-get install -y /usr/local/assets/apptainer_1.4.1_amd64.deb; then
-	echo "ERROR: Failed to install apptainer" >&2
-	exit 1
-# Source utility scripts
-elif ! source /usr/local/scripts/utilities.sh; then
-	echo "ERROR: Failed to source utilities.sh" >&2
-	exit 1
-# Create working directory
-elif ! mkdir -p "${cadd_working_dir}/input_vcfs" "${cadd_working_dir}/parallel_dir" ; then
-	log_message "ERROR: Failed to create CADD working directory"
-	exit 1
-fi
-
 # Process input VCFs for CADD: the function prepare_cadd_vcfs downloads and prepares the input VCFs (cuts first 5 cols); it returns a list of paths
-cadd_working_dir="${HOME}/CADD"
 
 log_message "INFO: Preparing input VCFs for CADD scoring"
 if ! mapfile -t input_vcfs_path < <(prepare_cadd_vcfs); then
