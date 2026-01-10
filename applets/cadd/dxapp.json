@@ -14,12 +14,20 @@
         "optional": false
       },
       {
-        "name": "cadd_dir",
+        "name": "cadd_dir_path",
         "label": "CADD data directory",
         "help": "CADD data directory on DNAnexus RAP platform",
         "class": "string",
         "default": "/Resources/cadd_v1_7_data",
-        "optional": true
+        "optional": false
+      },
+      {
+        "name": "cadd_dir_project",
+        "label": "CADD data project",
+        "help": "DNAnexus project containing the CADD data directory",
+        "class": "string",
+        "default": "project-GzKk3XjJZz4ZgXzP2v1029qB",
+        "optional": false
       },
       {
         "name": "cadd_jobs",
@@ -33,9 +41,9 @@
   "outputSpec":
     [
       {
-        "name": "cadd_log",
-        "label": "Log file",
-        "help": "Job log: a text file with summaries and concatenated STDERR files",
+        "name": "cadd_summary_log",
+        "label": "Summary log file",
+        "help": "Job log: a text file with summary of CADD annotation jobs",
         "class": "file",
         "patterns": ["*.log"],
         "optional": true
@@ -45,7 +53,16 @@
         "label": "Output files",
         "help": "One tsv file per input VCF",
         "class": "array:file",
-        "patterns": [".tsv.gz"],
+        "patterns": [".cadd.tsv.gz"],
+        "optional": true
+
+      },
+      {
+        "name": "cadd_logs",
+        "label": "Log files",
+        "help": "One txt file per input VCF",
+        "class": "array:file",
+        "patterns": [".cadd.log"],
         "optional": true
 
       }
@@ -58,7 +75,7 @@
       "distribution": "Ubuntu",
       "release": "24.04",
       "version": "0",
-      "execDepends": [{"name": "parallel"}, {"name": "rpm2cpio"}]
+      "execDepends": [{"name": "parallel"}]
     },
 
   "access": { "network": ["*"] },

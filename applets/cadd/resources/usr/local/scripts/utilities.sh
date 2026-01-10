@@ -13,6 +13,11 @@ process_vcf_file() {
     local vcf_file_name=""
     local vcf_file_prefix=""
     local cadd_vcf_dir=""
+    local vcf_file_extension=""
+    local mode
+    local cadd_vcf_name=""
+    local output_path=""
+    local stream_cmd=""
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
@@ -47,10 +52,9 @@ process_vcf_file() {
     fi
 
     # Remove the prefix from filename to isolate the extension part
-    local vcf_file_extension="${vcf_file_name#$vcf_file_prefix}"
+    vcf_file_extension="${vcf_file_name#$vcf_file_prefix}"
 
     # Determine file type/mode based on extension
-    local mode
     case "$vcf_file_extension" in
         .vcf.gz|.vcf.bgz|.tsv.gz|.tsv.bgz)
             mode="gz"
@@ -65,17 +69,17 @@ process_vcf_file() {
             mode="bcf"
             ;;
         *)
-            log_message "INFO: Unknown file type for $vcf_file_name, defaulting to bcf"
+            log_message "WARNING: Unknown file type for $vcf_file_name, defaulting to bcf"
             mode="bcf"
             ;;
     esac
 
     # Define CADD VCF output name
-    local cadd_vcf_name="${vcf_file_prefix}.cadd${vcf_file_extension}"
-    local output_path="${cadd_vcf_dir}/${cadd_vcf_name}"
+    cadd_vcf_name="${vcf_file_prefix}.cadd${vcf_file_extension}"
+    output_path="${cadd_vcf_dir}/${cadd_vcf_name}"
 
     # Stream from DNAnexus based on file type
-    local stream_cmd
+
     case "$mode" in
         gz)
             stream_cmd="dx cat \"$vcf_file_id\" | gzip -dc"
@@ -97,7 +101,7 @@ process_vcf_file() {
 
     # Stream, process, and compress VCF
     eval "$stream_cmd" | \
-        awk -F'\t' '/^#/{gsub(/^chrM/,"MT",$1); gsub(/^chr/,"",$1); NF=5; print} /^[^#]/{print}' OFS="\t" | \
+        awk -F'\t' '!/^#/{gsub(/^chrM/,"MT",$1); gsub(/^chr/,"",$1); NF=5; print}' OFS="\t" | \
         gzip > "$output_path"
 
     local exit_code=$?
@@ -112,22 +116,53 @@ process_vcf_file() {
 
 # Function to prepare CADD input VCFs in parallel
 prepare_cadd_vcfs() {
-    # Usage: prepare_cadd_vcfs [--output_dir <dir>] [--max_jobs <N>]
+    # Usage: prepare_cadd_vcfs [--output_dir <dir>] [--dx_jobs <N>]
     # Arguments:
-    #   --output_dir: Output directory for processed VCFs (default: ${HOME}/input_vcfs)
-    #   --max_jobs: Maximum number of parallel jobs (default: auto-detected based on CPU cores)
+    #   --output_dir: Output directory for processed VCFs (default: ${HOME}/CADD/input_vcfs)
+    #   --dx_jobs: Maximum number of parallel dx cat jobs (default: auto-detected based on CPU cores)
 
-    local cadd_vcf_dir="${HOME}/input_vcfs"
-    local max_jobs=5
+    # Declare all local variables
+    local cadd_vcf_dir
+    local max_jobs
+    local n_cores
+    local input_ids=()
+    local input_names=()
+    local input_prefixes=()
+    local input_count
+    local file_id
+    local item
+    local vcf_data=()
+    local vcf_file_idx
+    local vcf_file_id
+    local vcf_file_name
+    local vcf_file_prefix
+    local vcf_file_extension
+    local cadd_vcf_name
+    local output_path
 
-    # Parse arguments
+    # Check for input VCFs from DNAnexus job input
+    if [[ $(cat ${HOME}/job_input.json  | jq -r '.cadd_input | length' ) -eq 0 ]]; then
+        log_message "ERROR: No input VCFs provided for CADD scoring"
+        exit 1
+        # For testing purposes, use example VCFs from DNAnexus
+        # cadd_input=('{"$dnanexus_link": "file-J1gJGJjJZz4fBk66qv9qPXZ1"}' '{"$dnanexus_link": "file-J1gJGKQJZz4p3Bk2vqGBxqj9"}')
+        #cadd_input_name=("example1.vcf.gz" "example2.vcf.gz")
+        # cadd_input_prefix=("example1" "example2")
+    fi
+
+    # Set default parameters
+    cadd_vcf_dir="${HOME}/CADD/input_vcfs"
+    max_jobs=0
+
+
+    # Parse arguments and update variables if provided
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --output_dir)
                 cadd_vcf_dir="$2"
                 shift 2
                 ;;
-            --max_jobs)
+            --dx_jobs)
                 max_jobs="$2"
                 shift 2
                 ;;
@@ -139,169 +174,226 @@ prepare_cadd_vcfs() {
         esac
     done
 
-    # Create target directory
+    # Create target directory if it does not exist
     mkdir -p "$cadd_vcf_dir"
 
-    local vcf_count=${#input_vcfs[@]}
-
-    if [[ $vcf_count -eq 0 ]]; then
-        log_message "ERROR: No input VCFs provided"
-        return 1
-    fi
-
     # Determine number of parallel jobs based on available cores (only if not explicitly set)
-    if [[ $max_jobs -eq 5 ]]; then
-        local n_cores=$(nproc 2>/dev/null || echo 1)
-        if [[ $n_cores -gt 6 ]]; then
-            max_jobs=5
-        elif [[ $n_cores -gt 1 ]]; then
+    if [[ $max_jobs -eq 0 ]]; then
+        n_cores=$(nproc 2>/dev/null || echo 1)
+        if [[ $n_cores -gt 11 ]]; then
+            max_jobs=10
+        elif [[ $n_cores -gt 2 ]]; then
             max_jobs=$((n_cores - 1))
         else
             max_jobs=1
         fi
     fi
 
-    log_message "INFO: Processing $vcf_count VCF files in parallel (max jobs: $max_jobs)"
+
+
+
+    # Extract file IDs from DNAnexus cadd_input bash array into local array
+    #
+    # Expected format (set automatically by DNAnexus for array:file inputs):
+    # cadd_input=(
+    #     '{"$dnanexus_link": "file-J1gJGKjJZz4kYvZYbkGZ0F84"}'
+    #     '{"$dnanexus_link": "file-J1gJGG8JZz4kbvGgYx7y7FBX"}'
+    # )
+    #
+    # Each element is a JSON string that needs to be parsed to extract the file ID
+    for item in "${cadd_input[@]}"; do
+        file_id=$(jq -r '."$dnanexus_link"' <<< "$item")
+        input_ids+=("$file_id")
+    done
+
+    input_names=("${cadd_input_name[@]}")
+    input_prefixes=("${cadd_input_prefix[@]}")
+
+    input_count=${#input_ids[@]}
+
+    # Debug: log array sizes
+    # log_message "DEBUG: input_ids has ${#input_ids[@]} elements"
+    # log_message "DEBUG: input_names has ${#input_names[@]} elements"
+    # log_message "DEBUG: input_prefixes has ${#input_prefixes[@]} elements"
+
+    # Validate that we have input files and all arrays match
+    if [[ $input_count -eq 0 ]]; then
+        log_message "ERROR: No input VCFs provided"
+        return 1
+    elif [[ ${#input_names[@]} -ne $input_count ]]; then
+        log_message "ERROR: Mismatch between input_ids (${input_count}) and input_names (${#input_names[@]})"
+        return 1
+    elif [[ ${#input_prefixes[@]} -ne $input_count ]]; then
+        log_message "ERROR: Mismatch between input_ids (${input_count}) and input_prefixes (${#input_prefixes[@]})"
+        return 1
+    fi
+
+
+    log_message "INFO: Processing $input_count VCF files in parallel (max streaming jobs: $max_jobs)"
     log_message "INFO: Output directory: $cadd_vcf_dir"
-    echo ""
 
     # Export variables and functions for subshells
     export cadd_vcf_dir
     export -f process_vcf_file
     export -f log_message
 
-    # Build tab-separated data for all VCFs
-    local vcf_data=()
-    for (( vcf_file_idx = 0; vcf_file_idx < vcf_count; ++vcf_file_idx )); do
-        # Get file ID from input array (automatically set by platform)
-        local vcf_file_id=$(echo "${input_vcfs[$vcf_file_idx]}" | jq -r ."$dnanexus_link")
+    # Create temporary files to store array data for parallel processing
+    local tmp_ids="${cadd_vcf_dir}/.tmp_ids_$$"
+    local tmp_names="${cadd_vcf_dir}/.tmp_names_$$"
+    local tmp_prefixes="${cadd_vcf_dir}/.tmp_prefixes_$$"
 
-        # Get file name and prefix from platform arrays
-        local vcf_file_name="${input_vcfs_name[$vcf_file_idx]}"
-        local vcf_file_prefix="${input_vcfs_prefix[$vcf_file_idx]}"
+    printf '%s\n' "${input_ids[@]}" > "$tmp_ids"
+    printf '%s\n' "${input_names[@]}" > "$tmp_names"
+    printf '%s\n' "${input_prefixes[@]}" > "$tmp_prefixes"
 
-        # Store as tab-separated values
-        vcf_data+=("${vcf_file_id}\t${vcf_file_name}\t${vcf_file_prefix}")
-    done
+    # Process VCFs in parallel using xargs with line-by-line matching
+    log_message "INFO: VCF processing started..."
 
-    # Process VCFs in parallel using xargs
-    printf '%s\n' "${vcf_data[@]}" | \
-        xargs -P "$max_jobs" -I {} bash -c 'IFS=$"\t" read -r file_id file_name file_prefix <<< "{}"; process_vcf_file --file_id "$file_id" --file_name "$file_name" --file_prefix "$file_prefix" --output_dir "$cadd_vcf_dir"'
+    # Process files in parallel using paste to combine the three files line-by-line
+    paste "$tmp_ids" "$tmp_names" "$tmp_prefixes" | \
+        xargs -P "$max_jobs" -I {} bash -c '
+            read -r file_id file_name file_prefix <<< "{}"
+            process_vcf_file \
+                --file_id "$file_id" \
+                --file_name "$file_name" \
+                --file_prefix "$file_prefix" \
+                --output_dir "$cadd_vcf_dir"
+        '
 
-    echo ""
-    log_message "INFO: All VCF processing completed!"
-    log_message "INFO: Output directory: $cadd_vcf_dir"
-    echo ""
+    # Clean up temporary files
+    rm -f "$tmp_ids" "$tmp_names" "$tmp_prefixes"
+    
+
 
     # Build and output array of processed file paths
-    for (( vcf_file_idx = 0; vcf_file_idx < vcf_count; ++vcf_file_idx )); do
-        local vcf_file_name="${input_vcfs_name[$vcf_file_idx]}"
-        local vcf_file_prefix="${input_vcfs_prefix[$vcf_file_idx]}"
-        local vcf_file_extension="${vcf_file_name#$vcf_file_prefix}"
-        local cadd_vcf_name="${vcf_file_prefix}.cadd${vcf_file_extension}"
-        echo "${cadd_vcf_dir}/${cadd_vcf_name}"
+    # Check that each processed file exists before echoing its path
+
+    for (( vcf_file_idx = 0; vcf_file_idx < input_count; ++vcf_file_idx )); do
+        vcf_file_name="${input_names[$vcf_file_idx]}"
+        vcf_file_prefix="${input_prefixes[$vcf_file_idx]}"
+        vcf_file_extension="${vcf_file_name#$vcf_file_prefix}"
+        cadd_vcf_name="${vcf_file_prefix}.cadd${vcf_file_extension}"
+        output_path="${cadd_vcf_dir}/${cadd_vcf_name}"
+
+        # Return the path only if the file exists
+        if [[ -f "$output_path" ]]; then
+            echo "$output_path"
+        else
+            log_message "WARNING: Processed file not found: $output_path"
+        fi
     done
 }
 
 # Downloads a single file from DNAnexus while preserving directory structure
 dx_download_file() {
-    # Usage: dx_download_file --file_id <id> --target_dir <dir> [--dx_folder <folder>] [--remote_folder <folder>]
-    # Arguments:
-    #   --file_id: DNAnexus file ID to download (required)
-    #   --target_dir: Local target directory (required)
-    #   --dx_folder: Base remote folder path (optional, used for path mapping)
-    #                Supports formats: "/path" or "project-id:/path"
-    #   --remote_folder: Specific remote folder for this file (optional, used with dx_folder)
-    #                    Supports formats: "/path" or "project-id:/path"
+    # Usage: dx_download_file --dx_file_id <id> --dx_directory_path <path> --local_directory <dir> [--strip_prefix <prefix>]
     #
-    # Path Format Handling:
-    #   Automatically strips "project-id:" or "project-name:" prefixes from paths before mapping.
-    #   Examples of equivalent inputs:
-    #     --dx_folder "/data" --remote_folder "/data/subdir"
-    #     --dx_folder "project-xxx:/data" --remote_folder "/data/subdir"
-    #     --dx_folder "/data" --remote_folder "project-xxx:/data/subdir"
-    #     --dx_folder "project-xxx:/data" --remote_folder "project-yyy:/data/subdir"
-    #   All map to: target_dir/subdir
+    # Arguments:
+    #   --dx_file_id: DNAnexus file ID to download (e.g., "file-xxx") [required]
+    #   --dx_directory_path: Remote file's directory path in DNAnexus [required]
+    #                        Supports formats: "/path", "/path/", "project-id:/path", "project-id:path"
+    #   --local_directory: Local base directory for downloads [required]
+    #   --strip_prefix: Optional prefix to remove from dx_directory_path before constructing local path
+    #                   Example: if dx_directory_path="/data/cadd/annotations" and strip_prefix="/data/cadd"
+    #                   then local path will be "${local_directory}/annotations"
+    #
+    # The function downloads the file and preserves the directory structure from dx_directory_path
 
-    local file_id=""
-    local target_dir=""
-    local dx_folder=""
-    local remote_folder=""
+    # Declare all local variables
+    local dx_file_id=""
+    local dx_directory_path=""
+    local local_directory=""
+    local strip_prefix=""
+    local dx_path_clean=""
+    local local_file_path=""
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --file_id)
-                file_id="$2"
+            --dx_file_id)
+                dx_file_id="$2"
                 shift 2
                 ;;
-            --target_dir)
-                target_dir="$2"
+            --dx_directory_path)
+                dx_directory_path="$2"
                 shift 2
                 ;;
-            --dx_folder)
-                dx_folder="$2"
+            --local_directory)
+                local_directory="$2"
                 shift 2
                 ;;
-            --remote_folder)
-                remote_folder="$2"
+            --strip_prefix)
+                strip_prefix="$2"
                 shift 2
                 ;;
             *)
                 log_message "ERROR: Unknown argument: $1"
+                log_message "Usage: dx_download_file --dx_file_id <id> --dx_directory_path <path> --local_directory <dir> [--strip_prefix <prefix>]"
                 return 1
                 ;;
         esac
     done
 
-    # Validate required arguments
-    if [[ -z "$file_id" || -z "$target_dir" ]]; then
-        log_message "ERROR: --file_id and --target_dir are required"
+    # Validate all required arguments
+    if [[ -z "$dx_file_id" ]]; then
+        log_message "ERROR: --dx_file_id is required"
+        return 1
+    elif [[ -z "$dx_directory_path" ]]; then
+        log_message "ERROR: --dx_directory_path is required"
+        return 1
+    elif [[ -z "$local_directory" ]]; then
+        log_message "ERROR: --local_directory is required"
         return 1
     fi
 
-    # Strip project prefix from paths if present (handles "project-id:/path" format)
-    # This ensures clean path mapping regardless of input format
-    local dx_folder_clean="$dx_folder"
-    local remote_folder_clean="$remote_folder"
+    # Clean the dx_directory_path:
+    # 1. Strip "project-id:" or "project-name:" prefix if present
+    # 2. Ensure it starts with "/"
+    # 3. Remove trailing "/" if present
+    # 4. Strip custom prefix (default: empty, which removes nothing)
+    dx_path_clean="$dx_directory_path"
 
-    if [[ "$dx_folder" =~ ^[^:]+:(.*)$ ]]; then
-        dx_folder_clean="${BASH_REMATCH[1]}"
+    # Remove project prefix (handles "project-xxx:/path" or "project-xxx:path")
+    if [[ "$dx_path_clean" =~ ^[^:]+:(.*)$ ]]; then
+        dx_path_clean="${BASH_REMATCH[1]}"
     fi
 
-    if [[ "$remote_folder" =~ ^[^:]+:(.*)$ ]]; then
-        remote_folder_clean="${BASH_REMATCH[1]}"
+    # Ensure leading slash
+    if [[ ! "$dx_path_clean" =~ ^/ ]]; then
+        dx_path_clean="/$dx_path_clean"
     fi
 
-    # Determine local folder based on path mapping
-    local local_folder="$target_dir"
-    if [[ -n "$dx_folder_clean" && -n "$remote_folder_clean" ]]; then
-        # Strip the base folder from remote folder to get relative path
-        local relative_path="${remote_folder_clean#$dx_folder_clean}"
-        # Remove leading slash from relative path if present
-        relative_path="${relative_path#/}"
-        # Construct final local folder path
-        if [[ -n "$relative_path" ]]; then
-            local_folder="${target_dir}/${relative_path}"
-        else
-            local_folder="$target_dir"
+    # Remove trailing slash
+    dx_path_clean="${dx_path_clean%/}"
+
+    # Normalize strip_prefix: ensure leading slash, remove trailing slash
+    local prefix_normalized="$strip_prefix"
+    if [[ -n "$prefix_normalized" ]]; then
+        if [[ ! "$prefix_normalized" =~ ^/ ]]; then
+            prefix_normalized="/$prefix_normalized"
         fi
+        prefix_normalized="${prefix_normalized%/}"
     fi
+
+    # Strip the prefix (if empty, this removes nothing)
+    dx_path_clean="${dx_path_clean#$prefix_normalized}"
+
+    # Ensure resulting path has leading slash if not empty
+    if [[ -n "$dx_path_clean" && ! "$dx_path_clean" =~ ^/ ]]; then
+        dx_path_clean="/$dx_path_clean"
+    fi
+
+    # Construct local folder path by appending cleaned dx path to local directory
+    local_file_path="${local_directory}${dx_path_clean}"
 
     # Ensure directory exists
-    mkdir -p "$local_folder"
+    mkdir -p "$local_file_path"
 
     # Download file with optimized flags
-    local result
-    result=$(dx download --overwrite --lightweight --no-progress --brief "$file_id" -o "$local_folder/" 2>&1)
-    local exit_code=$?
 
-    if [[ $exit_code -eq 0 ]]; then
-        log_message "INFO: ✓ Downloaded: $result"
-        return 0
-    else
-        log_message "ERROR: ✗ Failed [$file_id]: $result"
-        return $exit_code
+    if ! dx download --overwrite --lightweight --no-progress "$dx_file_id" -o "$local_file_path/" > /dev/null 2>&1 ; then
+    log_message "ERROR: Failed to download file $dx_file_id"
+        return 1
     fi
 }
 
@@ -310,13 +402,15 @@ dx_download_file() {
 
 # Function to download files from DNAnexus in parallel
 dx_parallel_download() {
-    # Usage: dx_parallel_download --dx_project PROJECT-ID --dx_folder /remote/path --target_dir /local/path
+    # Usage: dx_parallel_download --dx_project PROJECT-ID --dx_folder /remote/path --target_dir /local/path [--strip_prefix <prefix>]
     # Arguments:
     #   --dx_project: DNAnexus project ID containing the files to download (required).
     #   --dx_folder: Remote folder path in the DNAnexus project (required).
     #                Supports both formats: "/path" or "project-id:/path"
     #   --target_dir: Local directory to download files into (required).
-    #   --max_jobs: Maximum number of parallel jobs (default: 5).
+    #   --max_jobs: Maximum number of parallel jobs (default: auto-detected).
+    #   --strip_prefix: Optional prefix to strip from remote paths before creating local paths.
+    #                   Example: --strip_prefix "/Resources/cadd_v1_7_data"
     #
     # Path Format Handling:
     #   This function automatically strips "project-id:" prefixes when mapping remote paths
@@ -324,12 +418,24 @@ dx_parallel_download() {
     #     --dx_folder "/data/files"
     #     --dx_folder "project-xxx:/data/files"
     #     --dx_folder "project-name:/data/files"
-    
+
 
     local dx_project=""
     local dx_folder=""
     local target_dir=""
-    local max_jobs=5
+    local strip_prefix=""
+    local max_jobs
+    local n_cores
+    local dx_folder_normalized=""
+    local json_data=""
+    local total_files=""
+    local temp_file_ids
+    local temp_folders
+
+
+    # Set default parameters
+    max_jobs=0
+
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
@@ -346,13 +452,17 @@ dx_parallel_download() {
                 target_dir="$2"
                 shift 2
                 ;;
+            --strip_prefix)
+                strip_prefix="$2"
+                shift 2
+                ;;
             --max_jobs)
                 max_jobs="$2"
                 shift 2
                 ;;
             *)
                 log_message "ERROR: Unknown option: $1"
-                log_message "Usage: dx_parallel_download --dx_project PROJECT-ID --dx_folder /remote/path --target_dir /local/path [--max_jobs N]"
+                log_message "Usage: dx_parallel_download --dx_project PROJECT-ID --dx_folder /remote/path --target_dir /local/path [--strip_prefix <prefix>] [--max_jobs N]"
                 return 1
                 ;;
         esac
@@ -365,38 +475,43 @@ dx_parallel_download() {
         return 1
     fi
 
-    # Normalize dx_folder by stripping any project prefix (e.g., "project-xxx:/path" -> "/path")
-    # This ensures consistent path handling throughout the function
-    local dx_folder_for_find="$dx_folder"  # Keep original for dx find command
-    local dx_folder_normalized="$dx_folder"
+    # Clean the dx_folder path:
+    # 1. Strip "project-id:" or "project-name:" prefix if present
+    # 2. Ensure it starts with "/"
+    # 3. Remove trailing "/" if present
+    dx_folder_normalized="$dx_folder"
 
-    if [[ "$dx_folder" =~ ^[^:]+:(.*)$ ]]; then
+    # Remove project prefix (handles "project-xxx:/path" or "project-xxx:path")
+    if [[ "$dx_folder_normalized" =~ ^[^:]+:(.*)$ ]]; then
         dx_folder_normalized="${BASH_REMATCH[1]}"
     fi
 
+    # Ensure leading slash
+    if [[ ! "$dx_folder_normalized" =~ ^/ ]]; then
+        dx_folder_normalized="/$dx_folder_normalized"
+    fi
+
+    # Remove trailing slash
+    dx_folder_normalized="${dx_folder_normalized%/}"
+
     # Determine number of parallel jobs based on available cores (only if not explicitly set)
-    if [[ $max_jobs -eq 5 ]]; then
-        local n_cores=$(nproc 2>/dev/null || echo 1)
-        if [[ $n_cores -gt 6 ]]; then
-            max_jobs=5
-        elif [[ $n_cores -gt 1 ]]; then
+    if [[ $max_jobs -eq 0 ]]; then
+        
+        n_cores=$(nproc 2>/dev/null || echo 1)
+        
+        if [[ $n_cores -gt 11 ]]; then
+            max_jobs=10
+        elif [[ $n_cores -gt 2 ]]; then
             max_jobs=$((n_cores - 1))
         else
             max_jobs=1
         fi
     fi
 
-    log_message "INFO: Starting parallel download"
-    log_message "INFO: Project: $dx_project"
-    log_message "INFO: Remote folder: $dx_folder"
-    log_message "INFO: Target directory: $target_dir"
-    log_message "INFO: Parallel jobs: $max_jobs"
-    echo ""
-
     # Get all files in JSON format
     log_message "INFO: Fetching file list from DNAnexus..."
     # Use normalized path for dx find (without project prefix since we specify it separately)
-    local json_data=$(dx find data --path "${dx_project}:${dx_folder_normalized}" --class file --json)
+    json_data=$(dx find data --path "${dx_project}:${dx_folder_normalized}" --class file --json)
 
     if [[ -z "$json_data" ]]; then
         log_message "ERROR: No files found or failed to retrieve data"
@@ -404,24 +519,37 @@ dx_parallel_download() {
     fi
 
     # Count total files
-    local total_files=$(echo "$json_data" | jq 'length')
+    total_files=$(echo "$json_data" | jq 'length')
     log_message "INFO: Found $total_files files to download"
-    echo ""
 
     # Download files in parallel using xargs
     log_message "INFO: Starting downloads with $max_jobs parallel jobs..."
+    log_message "INFO: Remote folder: $dx_project:$dx_folder"
+    log_message "INFO: Target directory: $target_dir"
 
-    # Export normalized path and variables for use in subshells
-    # The normalized path ensures consistent path mapping without project prefixes
-    export dx_folder_normalized
+    # Export variables and functions for use in subshells
     export target_dir
+    export strip_prefix
+    export -f dx_download_file
     export -f log_message
 
-    # Use xargs to download files in parallel
-    echo "$json_data" | jq -r '.[] | "\(.id)\t\(.describe.folder)"' | \
-        xargs -P "$max_jobs" -I {} bash -c 'IFS=$"\t" read -r file_id remote_folder <<< "{}"; dx_download_file --file_id "$file_id" --target_dir "$target_dir" --dx_folder "$dx_folder_normalized" --remote_folder "$remote_folder"'
+    # Create temporary files to store file IDs and folders separately
 
-    echo ""
-    log_message "INFO: All downloads completed!"
+    tmp_file_ids="${target_dir}/dx_file_ids.list"
+    tmp_folders="${target_dir}/dx_folders.list"
+
+    echo "$json_data" | jq -r '.[].id' > "$tmp_file_ids"
+    echo "$json_data" | jq -r '.[].describe.folder' > "$tmp_folders"
+
+    # Use xargs to download files in parallel using paste to combine IDs and folders
+    paste "$tmp_file_ids" "$tmp_folders" | \
+        xargs -P "$max_jobs" -I {} bash -c '
+            read -r file_id remote_folder <<< "{}"
+            dx_download_file --dx_file_id "$file_id" --dx_directory_path "$remote_folder" --local_directory "$target_dir" --strip_prefix "$strip_prefix"
+        '
+
+    # Clean up temporary files
+    rm -f "$tmp_file_ids" "$tmp_folders"
+
     log_message "INFO: Files downloaded to: $target_dir"
 }
