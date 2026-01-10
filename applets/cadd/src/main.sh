@@ -45,7 +45,7 @@ fi
 
 
 # Install apptainer
-if ! sudo apt install -y /usr/local/assets/apptainer_1.4.1_amd64.deb; then
+if ! sudo apt-get install -y /usr/local/assets/apptainer_1.4.1_amd64.deb; then
 	echo "ERROR: Failed to install apptainer" >&2
 	exit 1
 # Source utility scripts
@@ -53,12 +53,13 @@ elif ! source /usr/local/scripts/utilities.sh; then
 	echo "ERROR: Failed to source utilities.sh" >&2
 	exit 1
 # Create working directory
-elif ! cadd_working_dir="${HOME}/CADD"; mkdir -p "${cadd_working_dir}/input_vcfs" "${cadd_working_dir}/parallel_dir" ; then
+elif ! mkdir -p "${cadd_working_dir}/input_vcfs" "${cadd_working_dir}/parallel_dir" ; then
 	log_message "ERROR: Failed to create CADD working directory"
 	exit 1
 fi
 
 # Process input VCFs for CADD: the function prepare_cadd_vcfs downloads and prepares the input VCFs (cuts first 5 cols); it returns a list of paths
+cadd_working_dir="${HOME}/CADD"
 
 log_message "INFO: Preparing input VCFs for CADD scoring"
 if ! mapfile -t input_vcfs_path < <(prepare_cadd_vcfs); then

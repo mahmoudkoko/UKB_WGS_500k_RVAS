@@ -1,0 +1,44 @@
+# Enforce Unix-style line endings (LF) for text files
+# This prevents CRLF line ending issues in Linux environments
+
+# Shell scripts
+*.sh text eol=lf
+
+# Python scripts
+*.py text eol=lf
+
+# R scripts
+*.r text eol=lf
+*.R text eol=lf
+
+# Perl scripts
+*.pl text eol=lf
+
+# Configuration files
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.toml text eol=lf
+*.ini text eol=lf
+*.conf text eol=lf
+*.config text eol=lf
+
+# Documentation
+*.md text eol=lf
+*.txt text eol=lf
+
+# Dockerfiles and Makefiles
+Dockerfile* text eol=lf
+Makefile text eol=lf
+*.mk text eol=lf
+
+# Binary files (ensure these are not treated as text)
+*.gz binary
+*.bz2 binary
+*.zip binary
+*.tar binary
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary

@@ -1,5 +1,3 @@
-#!/bin/bash
-
 # Function to print STDERR message with timestamp
 log_message() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >&2
