@@ -34,7 +34,6 @@
         "label": "Parallel jobs",
         "help": "Number of files to process in parallel",
         "class": "int",
-        "default": 5,
         "optional": true
       }
     ],
