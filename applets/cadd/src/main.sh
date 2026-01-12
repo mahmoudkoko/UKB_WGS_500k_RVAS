@@ -10,15 +10,13 @@ local CADD_DATA_PROJECT
 local CADD_DATA_DIR
 local CADD_JOBS
 local cadd_working_dir
-local input_vcfs_path
+local input_vcfs_list
 local v
 local input_file
-local input_basename
-local input_name
 local tsv_file
 local job_num
 local log_file
-local escaped_path
+local retry_num
 
 # Define CADD working directory
 cadd_working_dir="${HOME}/CADD"
@@ -32,7 +30,7 @@ elif ! source /usr/local/scripts/utilities.sh; then
 	echo "ERROR: Failed to source utilities.sh" >&2
 	exit 1
 # Create working directory
-elif ! mkdir -p "${cadd_working_dir}/input_vcfs" "${cadd_working_dir}/parallel_dir" ; then
+elif ! mkdir -p "${cadd_working_dir}/input_vcfs" "${cadd_working_dir}/parallel_dir" "${cadd_working_dir}/tmp" "${cadd_working_dir}/var_tmp"; then
 	log_message "ERROR: Failed to create CADD working directory"
 	exit 1
 fi
@@ -41,6 +39,7 @@ fi
 CADD_DATA_PROJECT=$(cat ${HOME}/job_input.json  | jq -r '.cadd_dir_project' || echo "null" )
 CADD_DATA_DIR=$(cat ${HOME}/job_input.json  | jq -r '.cadd_dir_path' || echo "null" )
 CADD_JOBS=$(cat ${HOME}/job_input.json  | jq -r '.cadd_jobs' || echo "null" )
+CADD_TIMEOUT=$(cat ${HOME}/job_input.json  | jq -r '.cadd_timeout' || echo "null" )
 
 
 if [[ "$CADD_DATA_PROJECT" == "null" || -z "$CADD_DATA_PROJECT" ]]; then
@@ -54,22 +53,28 @@ if [[ "$CADD_DATA_DIR" == "null" || -z "$CADD_DATA_DIR" ]]; then
 	CADD_DATA_DIR="/Resources/cadd_v1_7_data"
 fi
 
-if [[ "$CADD_JOBS" == "null" || -z "$CADD_JOBS" || "$CADD_JOBS" -le 0 ]]; then
+if [[ "$CADD_JOBS" == "null" || -z "$CADD_JOBS" ]] || ! [[ "$CADD_JOBS" =~ ^[0-9]+$ ]] || [[ "$CADD_JOBS" -le 0 ]]; then
 	log_message "WARNING: Number of CADD parallel jobs not specified or invalid. Auto-calculated from available memory"
 	CADD_JOBS=$(($(free -g | awk '/^Mem:/{print $2}') / 8))
 	CADD_JOBS=$((CADD_JOBS > 0 ? CADD_JOBS : 1))
 fi
 
+if [[ "$CADD_TIMEOUT" == "null" || -z "$CADD_TIMEOUT" ]] || ! [[ "$CADD_TIMEOUT" =~ ^[0-9]+$ ]] || [[ "$CADD_TIMEOUT" -le 0 ]]; then
+	log_message "WARNING: CADD timeout not specified or invalid. Using default 3600 seconds"
+	CADD_TIMEOUT=3600
+fi
+
+
 # Process input VCFs for CADD: the function prepare_cadd_vcfs downloads and prepares the input VCFs (cuts first 5 cols); it returns a list of paths
 
 log_message "INFO: Preparing input VCFs for CADD scoring"
-if ! mapfile -t input_vcfs_path < <(prepare_cadd_vcfs); then
+if ! mapfile -t input_vcfs_list < <(prepare_cadd_vcfs); then
 	log_message "ERROR: Failed to prepare CADD input VCFs"
 	exit 1
 fi
 
 # Write VCF paths to file for parallel to read
-printf '%s\n' "${input_vcfs_path[@]}" > "${cadd_working_dir}/parallel_dir/input_vcfs.txt"
+printf '%s\n' "${input_vcfs_list[@]}" > "${cadd_working_dir}/parallel_dir/input_vcfs.txt"
 
 # Check CADD data directory: it should exist in the specified DNAnexus project
 # Download CADD data directory: the function dx_parallel_download downloads a DNAnexus folder in parallel
@@ -96,7 +101,10 @@ log_message "INFO: Running CADD scoring with $CADD_JOBS parallel jobs"
 # This approach has lower overhead - container starts once and all jobs run inside it
 
 if singularity exec \
+	--no-privs \
 	--writable-tmpfs \
+	--bind ${cadd_working_dir}/tmp:/tmp \
+	--bind ${cadd_working_dir}/var_tmp:/var/tmp \
 	--bind ${cadd_working_dir}/parallel_dir:/opt/CADD/parallel_dir \
 	--bind ${cadd_working_dir}/input_vcfs:/opt/CADD/input_vcfs \
 	--bind ${cadd_working_dir}/annotations:/opt/CADD/data/annotations \
@@ -105,9 +113,10 @@ if singularity exec \
 	${cadd_working_dir}/containers/CADD_scripts_v1_7.sif \
 	parallel \
 		--jobs "$CADD_JOBS" \
+		--timeout "$CADD_TIMEOUT" \
+		--retries 2 \
 		--results /opt/CADD/parallel_dir \
 		--joblog /opt/CADD/parallel_dir/parallel.log \
-		--timeout 3000 \
 		run_cadd -c2 {} \
 		:::: /opt/CADD/parallel_dir/input_vcfs.txt; then
 		
@@ -119,76 +128,52 @@ else
 	exit 1
 fi
 
-# Version 2: 
-# Run parallel outside container (each job spawns a new Singularity container)
-# This approach has higher overhead due to container startup for each job
-
-# if parallel \
-# 	--jobs "$CADD_JOBS" \
-# 	--results "${cadd_working_dir}/parallel_dir" \
-# 	--joblog "${cadd_working_dir}/parallel_dir/parallel.log" \
-# 	--timeout 3000 \
-# 	singularity exec \
-# 		--writable-tmpfs \
-# 		--bind ${cadd_working_dir}/parallel_dir:/opt/CADD/parallel_dir \
-# 		--bind ${cadd_working_dir}/input_vcfs:/opt/CADD/input_vcfs \
-# 		--bind ${cadd_working_dir}/annotations:/opt/CADD/data/annotations \
-# 		--bind ${cadd_working_dir}/prescored:/opt/CADD/data/prescored \
-# 		--bind ${cadd_working_dir}/containers:/opt/CADD/src/sif \
-# 		${cadd_working_dir}/containers/CADD_scripts_v1_7.sif \
-# 		run_cadd {} \
-# 	:::: "${cadd_working_dir}/parallel_dir/input_vcfs.txt"; then
-# 	log_message "INFO: All CADD jobs completed successfully"
-# else
-# 	log_message "WARNING: Some CADD jobs failed"
-# fi
-
+# Collect results: move TSV files and logs to output directories
 log_message "INFO: Collecting results"
 
-for ((v=0; v < ${#input_vcfs_path[@]}; ++v)); do
+for ((v=0; v < ${#input_vcfs_list[@]}; ++v)); do
 	# Create output subdirectories
-	mkdir -p "${HOME}/out/cadd_scores/${v}" "${HOME}/out/cadd_logs/${v}"
 
 	# Get the input filename without path
-	input_file="${input_vcfs_path[$v]}"
-	input_basename=$(basename "$input_file")
-	input_name="${input_basename%.vcf.gz}"
+	input_file="${input_vcfs_list[$v]}"
+	tsv_file="${cadd_working_dir}/input_vcfs/${input_file%.vcf.gz}.tsv.gz"
 
-	# Move CADD TSV output to scores directory (example2.cadd.vcf.gz -> example2.cadd.tsv.gz)
-	tsv_file="${cadd_working_dir}/input_vcfs/${input_name}.tsv.gz"
 	if [[ -f "$tsv_file" ]]; then
+
+		# Move CADD TSV output to scores directory
+		mkdir -p "${HOME}/out/cadd_scores/${v}" "${HOME}/out/cadd_logs/${v}"
 		mv "$tsv_file" "${HOME}/out/cadd_scores/${v}/"
+	
 	else
 		log_message "WARNING: TSV file not found: ${tsv_file}"
 	fi
 
 	# Concatenate stdout and stderr into a single log file named after the input
-	# Parallel results are stored by job sequence number (v+1 since jobs start at 1)
-	# Directory structure: parallel_dir/{job_num}/_path_with_underscores/stdout
-	job_num=$((v + 1))
-	log_file="${HOME}/out/cadd_logs/${v}/${input_name}.log"
+	# Parallel results are stored by retry attempt number (1 for first attempt, 2 for retry, etc.)
+	# Directory structure: parallel_dir/{retry_num}/_path_with_underscores/stdout
+	log_file="${HOME}/out/cadd_logs/${v}/${input_file%.vcf.gz}.log"
 
-	# Convert input path to parallel's escaped format (replace / with _)
-	escaped_path=$(echo "$input_file" | sed 's/\//_/g')
 
-	{
-		echo "CADD Log for ${input_basename}"
-		echo "================================"
-		echo ""
-		echo "==== STDOUT ===="
-		if [[ -f "${cadd_working_dir}/parallel_dir/${job_num}/${escaped_path}/stdout" ]]; then
-			cat "${cadd_working_dir}/parallel_dir/${job_num}/${escaped_path}/stdout"
-		else
-			echo "No stdout found for job ${job_num} at ${escaped_path}"
+	# Try to find the log in retry directories (1 for first attempt, 2+ for retries)
+	for retry_num in {1..2}; do
+		if [[ -f "${cadd_working_dir}/parallel_dir/${retry_num}/${input_file}/stderr" ]]; then
+			{
+				echo "CADD Log ${retry_num} for ${input_file}"
+				echo "================================"
+				echo ""
+				echo "==== STDOUT ===="
+					cat "${cadd_working_dir}/parallel_dir/${retry_num}/${input_file}/stdout"
+				echo ""
+				echo "==== STDERR ===="
+					cat "${cadd_working_dir}/parallel_dir/${retry_num}/${input_file}/stderr"
+			} >> "$log_file"
 		fi
-		echo ""
-		echo "==== STDERR ===="
-		if [[ -f "${cadd_working_dir}/parallel_dir/${job_num}/${escaped_path}/stderr" ]]; then
-			cat "${cadd_working_dir}/parallel_dir/${job_num}/${escaped_path}/stderr"
-		else
-			echo "No stderr found for job ${job_num} at ${escaped_path}"
-		fi
-	} > "$log_file"
+	done
+
+	if [[ ! -f "$log_file" ]]; then
+		echo "WARNING: No parallel output found for ${input_file}" > "$log_file"
+		log_message "WARNING: No parallel output found for ${input_file}"
+	fi
 
 done
 

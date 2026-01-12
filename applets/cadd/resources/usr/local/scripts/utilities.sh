@@ -15,7 +15,6 @@ process_vcf_file() {
     local mode
     local cadd_vcf_name=""
     local output_path=""
-    local stream_cmd=""
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
@@ -60,10 +59,10 @@ process_vcf_file() {
         .vcf.zst|.vcf.zstd|.tsv.zst|.tsv.zstd)
             mode="zst"
             ;;
-        .vcf|.tsv)
+        .vcf|.tsv|.pvar)
             mode="vcf"
             ;;
-        .bcf)
+        .bcf|.bcf.gz|.bcf.bgz)
             mode="bcf"
             ;;
         *)
@@ -73,23 +72,28 @@ process_vcf_file() {
     esac
 
     # Define CADD VCF output name
-    cadd_vcf_name="${vcf_file_prefix}.cadd${vcf_file_extension}"
+    cadd_vcf_name="${vcf_file_prefix}.cadd.vcf.gz"
     output_path="${cadd_vcf_dir}/${cadd_vcf_name}"
 
-    # Stream from DNAnexus based on file type
+    # Helper function to process stream: normalize chromosomes, extract first 5 columns, compress
+    process_and_compress() {
+        awk -F'\t' '!/^#/{gsub(/^chrM/,"MT",$1); gsub(/^chr/,"",$1); NF=5; print}' OFS="\t" | \
+            gzip > "$output_path"
+    }
 
+    # Stream from DNAnexus based on file type and process
     case "$mode" in
         gz)
-            stream_cmd="dx cat \"$vcf_file_id\" | gzip -dc"
+            dx cat "$vcf_file_id" | gzip -dc | process_and_compress
             ;;
         zst)
-            stream_cmd="dx cat \"$vcf_file_id\" | zstd -dc"
+            dx cat "$vcf_file_id" | zstd -dc | process_and_compress
             ;;
         vcf)
-            stream_cmd="dx cat \"$vcf_file_id\""
+            dx cat "$vcf_file_id" | process_and_compress
             ;;
         bcf)
-            stream_cmd="dx cat \"$vcf_file_id\" | bcftools view"
+            dx cat "$vcf_file_id" | bcftools view | process_and_compress
             ;;
         *)
             log_message "ERROR: Invalid mode: $mode"
@@ -97,17 +101,12 @@ process_vcf_file() {
             ;;
     esac
 
-    # Stream, process, and compress VCF
-    eval "$stream_cmd" | \
-        awk -F'\t' '!/^#/{gsub(/^chrM/,"MT",$1); gsub(/^chr/,"",$1); NF=5; print}' OFS="\t" | \
-        gzip > "$output_path"
-
     local exit_code=$?
     if [[ $exit_code -eq 0 ]]; then
-        log_message "INFO: ✓ Processed: ${cadd_vcf_name}"
+        log_message "INFO: Successfully processed: ${cadd_vcf_name}"
         return 0
     else
-        log_message "ERROR: ✗ Failed: ${cadd_vcf_name}"
+        log_message "ERROR: Failed to process: ${cadd_vcf_name}"
         return $exit_code
     fi
 }
@@ -129,12 +128,8 @@ prepare_cadd_vcfs() {
     local input_count
     local file_id
     local item
-    local vcf_data=()
     local vcf_file_idx
     local vcf_file_id
-    local vcf_file_name
-    local vcf_file_prefix
-    local vcf_file_extension
     local cadd_vcf_name
     local output_path
 
@@ -142,10 +137,6 @@ prepare_cadd_vcfs() {
     if [[ $(cat ${HOME}/job_input.json  | jq -r '.cadd_input | length' ) -eq 0 ]]; then
         log_message "ERROR: No input VCFs provided for CADD scoring"
         exit 1
-        # For testing purposes, use example VCFs from DNAnexus
-        # cadd_input=('{"$dnanexus_link": "file-J1gJGJjJZz4fBk66qv9qPXZ1"}' '{"$dnanexus_link": "file-J1gJGKQJZz4p3Bk2vqGBxqj9"}')
-        #cadd_input_name=("example1.vcf.gz" "example2.vcf.gz")
-        # cadd_input_prefix=("example1" "example2")
     fi
 
     # Set default parameters
@@ -209,11 +200,6 @@ prepare_cadd_vcfs() {
 
     input_count=${#input_ids[@]}
 
-    # Debug: log array sizes
-    # log_message "DEBUG: input_ids has ${#input_ids[@]} elements"
-    # log_message "DEBUG: input_names has ${#input_names[@]} elements"
-    # log_message "DEBUG: input_prefixes has ${#input_prefixes[@]} elements"
-
     # Validate that we have input files and all arrays match
     if [[ $input_count -eq 0 ]]; then
         log_message "ERROR: No input VCFs provided"
@@ -267,15 +253,12 @@ prepare_cadd_vcfs() {
     # Check that each processed file exists before echoing its path
 
     for (( vcf_file_idx = 0; vcf_file_idx < input_count; ++vcf_file_idx )); do
-        vcf_file_name="${input_names[$vcf_file_idx]}"
-        vcf_file_prefix="${input_prefixes[$vcf_file_idx]}"
-        vcf_file_extension="${vcf_file_name#$vcf_file_prefix}"
-        cadd_vcf_name="${vcf_file_prefix}.cadd${vcf_file_extension}"
+        cadd_vcf_name="${input_prefixes[$vcf_file_idx]}.cadd.vcf.gz"
         output_path="${cadd_vcf_dir}/${cadd_vcf_name}"
 
         # Return the path only if the file exists
         if [[ -f "$output_path" ]]; then
-            echo "$output_path"
+            echo "$cadd_vcf_name"
         else
             log_message "WARNING: Processed file not found: $output_path"
         fi

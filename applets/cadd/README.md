@@ -6,12 +6,11 @@ This DNAnexus applet performs CADD (Combined Annotation Dependent Depletion) ann
 
 ## Features
 
-- Processes multiple input variant files in parallel
-- Supports various input formats: VCF, BCF, PVAR, and compressed variants (gz, zst, bgz)
-- Uses Singularity/Apptainer containerization for reproducible CADD scoring
-- Automatic memory-based parallelization
-- Comprehensive logging and job summaries
-- Efficient streaming from DNAnexus platform
+- Processes multiple input variant files in parallel.
+- Supports various input formats: VCF, BCF, PVAR, TSV, and compressed variants (gz, zst, bgz).
+- Uses Singularity/Apptainer containerization for reproducible CADD scoring.
+- Logging and job summaries.
+- Efficient parallel streaming of inputs and annotation resources from DNAnexus platform to reduce overhead to ~30 min.
 
 ## Input Specifications
 
@@ -20,16 +19,21 @@ This DNAnexus applet performs CADD (Combined Annotation Dependent Depletion) ann
 - **cadd_input** (array:file): Array of variant file IDs
   - Supported formats: `.vcf`, `.vcf.gz`, `.vcf.bgz`, `.pvar`, `.pvar.zst`, `.pvar.zstd`, `.bcf`, `.tsv.gz`, `.tsv`
 
-### Optional Inputs
-
 - **cadd_dir_path** (string): CADD data directory on DNAnexus RAP platform
-  - Default: `/Resources/cadd_v1_7_data`
+  - Default: `/Resources/cadd_v1_7_data`.
+  - Note: This contains an uncompressed version of the annotation resources tar, prescored variants, and two SIF images.
 
 - **cadd_dir_project** (string): DNAnexus project containing the CADD data directory
   - Default: `project-GzKk3XjJZz4ZgXzP2v1029qB`
 
+
+### Optional Inputs
+
 - **cadd_jobs** (int): Number of files to process in parallel
   - Default: Auto-calculated based on available memory (1 job per 8GB RAM)
+
+- **cadd_timeout** (int): Timeout per file in seconds
+  - Default: 3600 (1h)
 
 ## Output Specifications
 
@@ -47,12 +51,11 @@ This DNAnexus applet performs CADD (Combined Annotation Dependent Depletion) ann
 
 ## System Requirements
 
-- **Instance Type**: `mem1_ssd1_v2_x36`
-- **Distribution**: Ubuntu 24.04
+- **Instance Type**: defaults to `mem1_ssd1_v2_x36`
+- **Distribution**: defaults to Ubuntu 24.04
 - **Dependencies**:
-  - Apptainer (Singularity) 1.4.1
-  - GNU Parallel
-  - CADD v1.7 Singularity container and data files
+  - Apptainer (Singularity) 1.4.1 (asset provided with the applet)
+  - CADD v1.7 Singularity container and data files (downloaded from provided directories)
 
 ## How It Works
 
@@ -61,42 +64,58 @@ This DNAnexus applet performs CADD (Combined Annotation Dependent Depletion) ann
    - Streams files from DNAnexus
    - Extracts first 5 columns (CHROM, POS, ID, REF, ALT)
    - Normalizes chromosome naming (removes "chr" prefix, converts "chrM" to "MT")
-3. **CADD Data Download**: Retrieves CADD reference data in parallel
+3. **Data Download**: Retrieves CADD reference data in parallel
 4. **CADD Scoring**: Runs CADD annotation inside Singularity container
    - Uses GNU Parallel for efficient job distribution
-   - Timeout: 3000 seconds per file
+   - Timeout: 3600 seconds per file (adjust in main entry point for large files)
 5. **Results Collection**: Gathers output files and generates summary logs
 6. **Upload**: Uploads all outputs back to DNAnexus
 
 ## Usage Example
 
+
+To run on GUI, build from a cloned repository using DX client (e.g., via TTYD) then click the object 'ukb_cadd_applet' in your target build directory.
+
+
 ```bash
-dx run ukb_cadd_applet \
+dx build --brief -d "project-id:DESIRED/DIR/PATH/" -f /PATH/TO/UKB_WGS_500k_RVAS/applets/cadd/
+```
+
+
+To run from CLI, build from this repository (cloned locally), then pass the input file IDs or full path.
+
+
+```bash
+ukb_cadd_applet_id=$(dx build --brief -d "project-id:DESIRED/DIR/PATH/" -f /PATH/TO/UKB_WGS_500k_RVAS/applets/cadd/ | jq -r .id)
+```
+
+
+```bash
+dx run $ukb_cadd_applet_id \
   -icadd_input=file-xxx \
   -icadd_input=file-yyy \
-  -icadd_dir_path=/Resources/cadd_v1_7_data \
-  -icadd_dir_project=project-GzKk3XjJZz4ZgXzP2v1029qB \
-  -icadd_jobs=4
+  --destination "project-id:path/to/dir" \
+  --brief
 ```
 
 ## Performance Notes
 
-- Parallel jobs are automatically determined based on available memory (1 job per 8GB)
+- If not indicated explicitly, parallel jobs are automatically determined based on available memory (1 job per 8GB)
 - Uses optimized container approach: single container launch with parallel jobs inside
 - Efficient streaming avoids unnecessary local storage of large VCF files
 - Typical processing time varies by file size and variant count
 
 ## Version
 
-- **Version**: 1.0.0
-- **CADD Version**: 1.7
+- **Applet**: 1.0.0
+- **CADD**: 1.7
 
-## Dependencies Location
+## Dependencies
 
-- Apptainer package: `resources/usr/local/assets/apptainer_1.4.1_amd64.deb`
+- Entry point script: `src/main.sh`
 - Utility scripts: `resources/usr/local/scripts/utilities.sh`
-- Main script: `src/main.sh`
-
+- Apptainer package: `resources/usr/local/assets/apptainer_1.4.1_amd64.deb`
+- bcftools: installed via APT.
 ---
 
-*Documentation generated by Claude Code on 2026-01-10*
+*Documentation draft generated by Claude Code on 2026-01-10*. Last edited by @mahmoudkoko on 2026-01-12

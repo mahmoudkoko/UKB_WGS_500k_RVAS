@@ -14,6 +14,14 @@
         "optional": false
       },
       {
+        "name": "cadd_timeout",
+        "label": "Timeout",
+        "help": "Timeout in seconds per file",
+        "class": "int",
+        "default": 3600,
+        "optional": true
+      },
+      {
         "name": "cadd_dir_path",
         "label": "CADD data directory",
         "help": "CADD data directory on DNAnexus RAP platform",
@@ -69,12 +77,12 @@
   "runSpec":
     {
       "file": "src/main.sh",
-      "interpreter": "bash" ,
+      "interpreter": "bash",
       "systemRequirements": {"*": {"instanceType": "mem1_ssd1_v2_x36"} },
       "distribution": "Ubuntu",
       "release": "24.04",
       "version": "0",
-      "execDepends": [{"name": "parallel"}]
+      "execDepends": [{"name": "bcftools"}]
     },
 
   "access": { "network": ["*"] },
