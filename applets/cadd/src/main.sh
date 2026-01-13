@@ -30,7 +30,7 @@ elif ! source /usr/local/scripts/utilities.sh; then
 	echo "ERROR: Failed to source utilities.sh" >&2
 	exit 1
 # Create working directory
-elif ! mkdir -p "${cadd_working_dir}/input_vcfs" "${cadd_working_dir}/parallel_dir" "${cadd_working_dir}/tmp" "${cadd_working_dir}/var_tmp"; then
+elif ! mkdir -m 777 -p "${cadd_working_dir}/input_vcfs" "${cadd_working_dir}/parallel_dir"; then
 	log_message "ERROR: Failed to create CADD working directory"
 	exit 1
 fi
@@ -100,11 +100,8 @@ log_message "INFO: Running CADD scoring with $CADD_JOBS parallel jobs"
 # Run parallel inside a single container (parallel jobs run within the same container)
 # This approach has lower overhead - container starts once and all jobs run inside it
 
-if singularity exec \
-	--no-privs \
+if runuser -u dnanexus -- singularity exec \
 	--writable-tmpfs \
-	--bind ${cadd_working_dir}/tmp:/tmp \
-	--bind ${cadd_working_dir}/var_tmp:/var/tmp \
 	--bind ${cadd_working_dir}/parallel_dir:/opt/CADD/parallel_dir \
 	--bind ${cadd_working_dir}/input_vcfs:/opt/CADD/input_vcfs \
 	--bind ${cadd_working_dir}/annotations:/opt/CADD/data/annotations \
@@ -117,14 +114,14 @@ if singularity exec \
 		--retries 2 \
 		--results /opt/CADD/parallel_dir \
 		--joblog /opt/CADD/parallel_dir/parallel.log \
-		run_cadd -c2 {} \
+		run_cadd -c2 /opt/CADD/input_vcfs/{} \
 		:::: /opt/CADD/parallel_dir/input_vcfs.txt; then
 		
 	log_message "INFO: Summary of CADD jobs:"
 	cat "${cadd_working_dir}/parallel_dir/parallel.log" | \
 		awk -F"\t" 'BEGIN{t=0;f=0;s=0}NR>1{t+=$4}NR>1{if($7==0) ++s ; else ++f}END{print "Pass/Fail: " s"/"f ; printf "Average time: %.2fmin\n", t/(NR-1)/60 }'
 else
-	log_message "ERROR: Failed to run CADD-scripts from its singularity container"
+	log_message "ERROR: Failed to run CADD-scripts from singularity container"
 	exit 1
 fi
 
@@ -224,5 +221,3 @@ echo "========"
 cat "${HOME}/out/cadd_summary_log/CADD-${DX_JOB_ID}.log"
 
 }
-
-

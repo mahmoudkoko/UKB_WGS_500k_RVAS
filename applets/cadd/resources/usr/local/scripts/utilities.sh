@@ -53,20 +53,20 @@ process_vcf_file() {
 
     # Determine file type/mode based on extension
     case "$vcf_file_extension" in
-        .vcf.gz|.vcf.bgz|.tsv.gz|.tsv.bgz)
+        .vcf.gz|.vcf.bgz|.tsv.gz|.tsv.bgz|.pvar.gz|.pvar.bgz|.txt.gz|.txt.bgz)
             mode="gz"
             ;;
-        .vcf.zst|.vcf.zstd|.tsv.zst|.tsv.zstd)
+        .vcf.zst|.vcf.zstd|.tsv.zst|.tsv.zstd|.pvar.zst|.pvar.zstd|.txt.zst|.txt.zstd)
             mode="zst"
             ;;
-        .vcf|.tsv|.pvar)
+        .vcf|.tsv|.pvar|.txt)
             mode="vcf"
             ;;
         .bcf|.bcf.gz|.bcf.bgz)
             mode="bcf"
             ;;
         *)
-            log_message "WARNING: Unknown file type for $vcf_file_name, defaulting to bcf"
+            log_message "WARNING: Unknown file type for $vcf_file_name, defaulting to vcf/bcf"
             mode="bcf"
             ;;
     esac
@@ -77,8 +77,9 @@ process_vcf_file() {
 
     # Helper function to process stream: normalize chromosomes, extract first 5 columns, compress
     process_and_compress() {
-        awk -F'\t' '!/^#/{gsub(/^chrM/,"MT",$1); gsub(/^chr/,"",$1); NF=5; print}' OFS="\t" | \
-            gzip > "$output_path"
+        awk 'BEGIN{OFS="\t"; print "##fileformat=VCFv4.2"; print "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO"} \
+             !/^#/{gsub(/^chrM/,"MT",$1); gsub(/^chr/,"",$1); print $1,$2,$3,$4,$5,".",".","." }' | \
+            bcftools view -Oz --write-index -o "$output_path"
     }
 
     # Stream from DNAnexus based on file type and process
@@ -480,8 +481,8 @@ dx_parallel_download() {
         
         n_cores=$(nproc 2>/dev/null || echo 1)
         
-        if [[ $n_cores -gt 11 ]]; then
-            max_jobs=10
+        if [[ $n_cores -gt 16 ]]; then
+            max_jobs=15
         elif [[ $n_cores -gt 2 ]]; then
             max_jobs=$((n_cores - 1))
         else

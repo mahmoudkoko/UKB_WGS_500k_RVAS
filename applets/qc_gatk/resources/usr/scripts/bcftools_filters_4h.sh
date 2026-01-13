@@ -1,7 +1,7 @@
 bcf_filter_gt() {
 
     local input_bcf="$1"
-    local output_bcf="$2"
+    local output_bcf="$3"
 
     # Decompress & stream bcf
     bcftools view --no-version -Ou "${input_bcf}" |\
