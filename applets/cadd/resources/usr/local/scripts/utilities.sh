@@ -168,7 +168,7 @@ prepare_cadd_vcfs() {
     local output_path
 
     # Check for input VCFs from DNAnexus job input
-    if [[ $(cat ${HOME}/job_input.json  | jq -r '.cadd_input | length' ) -eq 0 ]]; then
+    if [[ "${#cadd_input[@]}" -eq 0 ]]; then
         log_message "ERROR: No input VCFs provided for CADD scoring"
         exit 1
     fi
@@ -222,7 +222,15 @@ prepare_cadd_vcfs() {
     #     '{"$dnanexus_link": "file-J1gJGKjJZz4kYvZYbkGZ0F84"}'
     #     '{"$dnanexus_link": "file-J1gJGG8JZz4kbvGgYx7y7FBX"}'
     # )
-    #
+    # Expected corresponding names and prefixes:
+    # cadd_input_name=(
+    #     "sample1.vcf.gz"
+    #     "sample2.vcf.gz"
+    # )
+    # cadd_input_prefix=(
+    #     "sample1"
+    #     "sample2"
+    # )
     # Each element is a JSON string that needs to be parsed to extract the file ID
     for item in "${cadd_input[@]}"; do
         file_id=$(jq -r '."$dnanexus_link"' <<< "$item")

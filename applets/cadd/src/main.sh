@@ -30,7 +30,7 @@ elif ! source /usr/local/scripts/utilities.sh; then
 	echo "ERROR: Failed to source utilities.sh" >&2
 	exit 1
 # Create working directory
-elif ! mkdir -m 777 -p "${cadd_working_dir}/input_vcfs" "${cadd_working_dir}/parallel_dir"; then
+elif ! mkdir -p "${cadd_working_dir}/input_vcfs" "${cadd_working_dir}/parallel_dir"; then
 	log_message "ERROR: Failed to create CADD working directory"
 	exit 1
 elif ! get_input_param; then
@@ -55,13 +55,16 @@ elif ! dx_parallel_download \
 	--target_dir "${cadd_working_dir}"; then
 	log_message "ERROR: Failed to download CADD data directory"
 	exit 1
+elif ! chown -R dnanexus:dnanexus "${cadd_working_dir}"; then
+	log_message "ERROR: Failed to change ownership of CADD working directory"
+	exit 1
 elif ! runuser -u dnanexus -- singularity exec \
 	--writable-tmpfs \
 	--bind "${cadd_working_dir}"/annotations:/opt/CADD/data/annotations \
 	--bind "${cadd_working_dir}"/prescored:/opt/CADD/data/prescored \
 	--bind "${cadd_working_dir}"/containers:/opt/CADD/src/sif \
 	"${cadd_working_dir}"/containers/CADD_scripts_v1_7.sif \
-	{run_cadd -c2 /opt/CADD/test/input.vcf.gz && zcat /opt/CADD/test/input.tsv.gz}; then
+	bash -c 'set -e; run_cadd -c2 /opt/CADD/test/input.vcf.gz && test -s /opt/CADD/test/input.tsv.gz'; then
 	log_message "ERROR: Test run of CADD-scripts from singularity container failed"
 	exit 1
 else
@@ -154,6 +157,7 @@ for ((v=0; v < ${#input_vcfs_list[@]}; ++v)); do
 	# Get the input filename without path
 	input_file="${input_vcfs_list[$v]}"
 	tsv_file="${cadd_working_dir}/input_vcfs/${input_file%.vcf.gz}.tsv.gz"
+	log_file="${HOME}/out/cadd_logs/${v}/${input_file%.vcf.gz}.log"
 
 	if [[ -f "$tsv_file" ]]; then
 
@@ -168,7 +172,6 @@ for ((v=0; v < ${#input_vcfs_list[@]}; ++v)); do
 	# Concatenate stdout and stderr into a single log file named after the input
 	# Parallel results are stored by retry attempt number (1 for first attempt, 2 for retry, etc.)
 	# Directory structure: parallel_dir/{retry_num}/_path_with_underscores/stdout
-	log_file="${HOME}/out/cadd_logs/${v}/${input_file%.vcf.gz}.log"
 
 
 	# Try to find the log in retry directories (1 for first attempt, 2+ for retries)
