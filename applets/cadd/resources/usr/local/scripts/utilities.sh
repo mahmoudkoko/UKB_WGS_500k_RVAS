@@ -3,6 +3,39 @@ log_message() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >&2
 }
 
+# Function to read and validate input parameters from job_input.json
+get_input_param() {
+
+# Read inputs and set up environment
+export CADD_DATA_PROJECT=$(cat ${HOME}/job_input.json  | jq -r '.cadd_dir_project' || echo "null" )
+export CADD_DATA_DIR=$(cat ${HOME}/job_input.json  | jq -r '.cadd_dir_path' || echo "null" )
+export CADD_JOBS=$(cat ${HOME}/job_input.json  | jq -r '.cadd_jobs' || echo "null" )
+export CADD_TIMEOUT=$(cat ${HOME}/job_input.json  | jq -r '.cadd_timeout' || echo "null" )
+
+# Validate and set defaults if necessary
+if [[ "$CADD_DATA_PROJECT" == "null" || -z "$CADD_DATA_PROJECT" ]]; then
+	log_message "WARNING: CADD data project not specified. Using current project $DX_PROJECT_CONTEXT_ID"
+	export CADD_DATA_PROJECT="$DX_PROJECT_CONTEXT_ID"
+fi
+
+if [[ "$CADD_DATA_DIR" == "null" || -z "$CADD_DATA_DIR" ]]; then
+	log_message "WARNING: CADD data directory not specified. Using default /Resources/cadd_v1_7_data"
+	export CADD_DATA_DIR="/Resources/cadd_v1_7_data"
+fi
+
+if [[ "$CADD_JOBS" == "null" || -z "$CADD_JOBS" ]] || ! [[ "$CADD_JOBS" =~ ^[0-9]+$ ]] || [[ "$CADD_JOBS" -le 0 ]]; then
+	log_message "WARNING: Number of CADD parallel jobs not specified or invalid. Auto-calculated from available memory"
+	export CADD_JOBS=$(($(free -g | awk '/^Mem:/{print $2}') / 8))
+	export CADD_JOBS=$((CADD_JOBS > 0 ? CADD_JOBS : 1))
+fi
+
+if [[ "$CADD_TIMEOUT" == "null" || -z "$CADD_TIMEOUT" ]] || ! [[ "$CADD_TIMEOUT" =~ ^[0-9]+$ ]] || [[ "$CADD_TIMEOUT" -le 0 ]]; then
+	log_message "WARNING: CADD timeout not specified or invalid. Using default 3600 seconds"
+	export CADD_TIMEOUT=3600
+fi
+
+}
+
 
 # Helper function to process a single VCF file
 # Streams from DNAnexus, processes, and compresses for CADD
@@ -491,7 +524,7 @@ dx_parallel_download() {
     fi
 
     # Get all files in JSON format
-    log_message "INFO: Fetching file list from DNAnexus..."
+    log_message "INFO: Fetching CADD data from DNAnexus..."
     # Use normalized path for dx find (without project prefix since we specify it separately)
     json_data=$(dx find data --path "${dx_project}:${dx_folder_normalized}" --class file --json)
 

@@ -10,7 +10,7 @@ local CADD_DATA_PROJECT
 local CADD_DATA_DIR
 local CADD_JOBS
 local cadd_working_dir
-local input_vcfs_list
+local input_vcfs_list=() 
 local v
 local input_file
 local tsv_file
@@ -33,55 +33,19 @@ elif ! source /usr/local/scripts/utilities.sh; then
 elif ! mkdir -m 777 -p "${cadd_working_dir}/input_vcfs" "${cadd_working_dir}/parallel_dir"; then
 	log_message "ERROR: Failed to create CADD working directory"
 	exit 1
-fi
-
-# Read inputs and set up environment
-CADD_DATA_PROJECT=$(cat ${HOME}/job_input.json  | jq -r '.cadd_dir_project' || echo "null" )
-CADD_DATA_DIR=$(cat ${HOME}/job_input.json  | jq -r '.cadd_dir_path' || echo "null" )
-CADD_JOBS=$(cat ${HOME}/job_input.json  | jq -r '.cadd_jobs' || echo "null" )
-CADD_TIMEOUT=$(cat ${HOME}/job_input.json  | jq -r '.cadd_timeout' || echo "null" )
-
-
-if [[ "$CADD_DATA_PROJECT" == "null" || -z "$CADD_DATA_PROJECT" ]]; then
-	log_message "WARNING: CADD data project not specified. Using current project $DX_PROJECT_CONTEXT_ID"
-	CADD_DATA_PROJECT="$DX_PROJECT_CONTEXT_ID"
-fi
-
-
-if [[ "$CADD_DATA_DIR" == "null" || -z "$CADD_DATA_DIR" ]]; then
-	log_message "WARNING: CADD data directory not specified. Using default /Resources/cadd_v1_7_data"
-	CADD_DATA_DIR="/Resources/cadd_v1_7_data"
-fi
-
-if [[ "$CADD_JOBS" == "null" || -z "$CADD_JOBS" ]] || ! [[ "$CADD_JOBS" =~ ^[0-9]+$ ]] || [[ "$CADD_JOBS" -le 0 ]]; then
-	log_message "WARNING: Number of CADD parallel jobs not specified or invalid. Auto-calculated from available memory"
-	CADD_JOBS=$(($(free -g | awk '/^Mem:/{print $2}') / 8))
-	CADD_JOBS=$((CADD_JOBS > 0 ? CADD_JOBS : 1))
-fi
-
-if [[ "$CADD_TIMEOUT" == "null" || -z "$CADD_TIMEOUT" ]] || ! [[ "$CADD_TIMEOUT" =~ ^[0-9]+$ ]] || [[ "$CADD_TIMEOUT" -le 0 ]]; then
-	log_message "WARNING: CADD timeout not specified or invalid. Using default 3600 seconds"
-	CADD_TIMEOUT=3600
-fi
-
-
-# Process input VCFs for CADD: the function prepare_cadd_vcfs downloads and prepares the input VCFs (cuts first 5 cols); it returns a list of paths
-
-log_message "INFO: Preparing input VCFs for CADD scoring"
-if ! mapfile -t input_vcfs_list < <(prepare_cadd_vcfs); then
+elif ! get_input_param; then
+	log_message "ERROR: Failed to get input parameters (CADD_DATA_PROJECT, CADD_DATA_DIR, CADD_JOBS, CADD_TIMEOUT)"
+	exit 1
+elif ! prepare_cadd_vcfs > "${cadd_working_dir}/parallel_dir/input_vcfs.txt"; then
 	log_message "ERROR: Failed to prepare CADD input VCFs"
 	exit 1
-fi
-
-# Write VCF paths to file for parallel to read
-printf '%s\n' "${input_vcfs_list[@]}" > "${cadd_working_dir}/parallel_dir/input_vcfs.txt"
-
-# Check CADD data directory: it should exist in the specified DNAnexus project
-# Download CADD data directory: the function dx_parallel_download downloads a DNAnexus folder in parallel
-
-log_message "INFO: Downloading CADD data directory $CADD_DATA_PROJECT:$CADD_DATA_DIR"
-
-if ! dx ls --brief "$CADD_DATA_PROJECT:$CADD_DATA_DIR" &> /dev/null; then
+elif ! mapfile -t input_vcfs_list < "${cadd_working_dir}/parallel_dir/input_vcfs.txt"; then
+	log_message "ERROR: Failed to read input VCF filenames into array"
+	exit 1
+elif [[ ${#input_vcfs_list[@]} -eq 0 ]]; then
+	log_message "ERROR: No input VCF files found for CADD processing"
+	exit 1
+elif ! dx ls --brief "$CADD_DATA_PROJECT:$CADD_DATA_DIR" &> /dev/null; then
 	log_message "ERROR: CADD data directory $CADD_DATA_DIR not found in project $CADD_DATA_PROJECT"
 	exit 1
 elif ! dx_parallel_download \
@@ -91,23 +55,32 @@ elif ! dx_parallel_download \
 	--target_dir "${cadd_working_dir}"; then
 	log_message "ERROR: Failed to download CADD data directory"
 	exit 1
+elif ! runuser -u dnanexus -- singularity exec \
+	--writable-tmpfs \
+	--bind "${cadd_working_dir}"/annotations:/opt/CADD/data/annotations \
+	--bind "${cadd_working_dir}"/prescored:/opt/CADD/data/prescored \
+	--bind "${cadd_working_dir}"/containers:/opt/CADD/src/sif \
+	"${cadd_working_dir}"/containers/CADD_scripts_v1_7.sif \
+	{run_cadd -c2 /opt/CADD/test/input.vcf.gz && zcat /opt/CADD/test/input.tsv.gz}; then
+	log_message "ERROR: Test run of CADD-scripts from singularity container failed"
+	exit 1
+else
+	log_message "INFO: CADD environment setup and test run completed successfully"
 fi
+
 
 # Run CADD
 
-log_message "INFO: Running CADD scoring with $CADD_JOBS parallel jobs"
-
-# Run parallel inside a single container (parallel jobs run within the same container)
-# This approach has lower overhead - container starts once and all jobs run inside it
+	log_message "INFO: Running CADD scoring with $CADD_JOBS parallel jobs"
 
 if runuser -u dnanexus -- singularity exec \
 	--writable-tmpfs \
-	--bind ${cadd_working_dir}/parallel_dir:/opt/CADD/parallel_dir \
-	--bind ${cadd_working_dir}/input_vcfs:/opt/CADD/input_vcfs \
-	--bind ${cadd_working_dir}/annotations:/opt/CADD/data/annotations \
-	--bind ${cadd_working_dir}/prescored:/opt/CADD/data/prescored \
-	--bind ${cadd_working_dir}/containers:/opt/CADD/src/sif \
-	${cadd_working_dir}/containers/CADD_scripts_v1_7.sif \
+	--bind "${cadd_working_dir}"/parallel_dir:/opt/CADD/parallel_dir \
+	--bind "${cadd_working_dir}"/input_vcfs:/opt/CADD/input_vcfs \
+	--bind "${cadd_working_dir}"/annotations:/opt/CADD/data/annotations \
+	--bind "${cadd_working_dir}"/prescored:/opt/CADD/data/prescored \
+	--bind "${cadd_working_dir}"/containers:/opt/CADD/src/sif \
+	"${cadd_working_dir}"/containers/CADD_scripts_v1_7.sif \
 	parallel \
 		--jobs "$CADD_JOBS" \
 		--timeout "$CADD_TIMEOUT" \
@@ -116,18 +89,65 @@ if runuser -u dnanexus -- singularity exec \
 		--joblog /opt/CADD/parallel_dir/parallel.log \
 		run_cadd -c2 /opt/CADD/input_vcfs/{} \
 		:::: /opt/CADD/parallel_dir/input_vcfs.txt; then
-		
-	log_message "INFO: Summary of CADD jobs:"
-	cat "${cadd_working_dir}/parallel_dir/parallel.log" | \
-		awk -F"\t" 'BEGIN{t=0;f=0;s=0}NR>1{t+=$4}NR>1{if($7==0) ++s ; else ++f}END{print "Pass/Fail: " s"/"f ; printf "Average time: %.2fmin\n", t/(NR-1)/60 }'
+
+	log_message "INFO: CADD scoring run completed"
 else
-	log_message "ERROR: Failed to run CADD-scripts from singularity container"
+	log_message "WARNING: Error(s) occurred during CADD scoring run"
+fi
+
+
+# Generate summary statistics
+
+if [[ -f "${cadd_working_dir}/parallel_dir/parallel.log" ]]; then
+
+	log_message "INFO: Summary of CADD jobs:"
+	awk -F"\t" 'BEGIN{t=0;f=0;s=0}NR>1{t+=$4}NR>1{if($7==0) ++s ; else ++f}END{print "Pass/Fail: " s"/"f ; printf "Average time: %.2fmin\n", t/(NR-1)/60 }' "${cadd_working_dir}/parallel_dir/parallel.log"
+
+else
+	log_message "ERROR: parallel.log file not found"
 	exit 1
 fi
+
+# Generate CADD summary log
+log_message "INFO: Generating CADD summary log"
+
+mkdir -p "${HOME}/out/cadd_summary_log/"
+
+{
+	echo "CADD Parallel Jobs Summary"
+	echo "=========================="
+	echo ""
+	awk -F"\t" 'BEGIN {
+		printf "%-8s %-40s %-12s %-10s %-10s\n", "Job", "Filename", "Runtime(min)", "Status", "ExitCode"
+		printf "%-8s %-40s %-12s %-10s %-10s\n", "--------", "----------------------------------------", "------------", "----------", "----------"
+	}
+	NR==1 {next}
+	{
+		# Job number is in column 1
+		job_num = $1
+		# Extract filename from field 9 (or last field with $NF)
+		arg = $9
+		# Remove leading/trailing whitespace
+		gsub(/^[ \t]+|[ \t]+$/, "", arg)
+		# Extract just the filename from the path
+		split(arg, path, "/")
+		filename = path[length(path)]
+		# Calculate runtime in minutes (column 4)
+		runtime = $4 / 60
+		# Determine pass/fail status (column 7)
+		status = ($7 == 0) ? "PASS" : "FAIL"
+		# Exit code is in column 7
+		exit_code = $7
+		# Print formatted table row
+		printf "%-8s %-40s %-12.2f %-10s %-10d\n", job_num, filename, runtime, status, exit_code
+	}' "${cadd_working_dir}/parallel_dir/parallel.log"
+} > "${HOME}/out/cadd_summary_log/CADD-${DX_JOB_ID}.log"
+
 
 # Collect results: move TSV files and logs to output directories
 log_message "INFO: Collecting results"
 
+# Read input VCF filenames into an array
 for ((v=0; v < ${#input_vcfs_list[@]}; ++v)); do
 	# Create output subdirectories
 
@@ -175,40 +195,6 @@ for ((v=0; v < ${#input_vcfs_list[@]}; ++v)); do
 done
 
 
-# Generate CADD summary log
-log_message "INFO: Generating CADD summary log"
-
-mkdir -p "${HOME}/out/cadd_summary_log/"
-
-{
-	echo "CADD Parallel Jobs Summary"
-	echo "=========================="
-	echo ""
-	awk -F"\t" 'BEGIN {
-		printf "%-8s %-40s %-12s %-10s %-10s\n", "Job", "Filename", "Runtime(min)", "Status", "ExitCode"
-		printf "%-8s %-40s %-12s %-10s %-10s\n", "--------", "----------------------------------------", "------------", "----------", "----------"
-	}
-	NR==1 {next}
-	{
-		# Job number is in column 1
-		job_num = $1
-		# Extract filename from field 9 (or last field with $NF)
-		arg = $9
-		# Remove leading/trailing whitespace
-		gsub(/^[ \t]+|[ \t]+$/, "", arg)
-		# Extract just the filename from the path
-		split(arg, path, "/")
-		filename = path[length(path)]
-		# Calculate runtime in minutes (column 4)
-		runtime = $4 / 60
-		# Determine pass/fail status (column 7)
-		status = ($7 == 0) ? "PASS" : "FAIL"
-		# Exit code is in column 7
-		exit_code = $7
-		# Print formatted table row
-		printf "%-8s %-40s %-12.2f %-10s %-10d\n", job_num, filename, runtime, status, exit_code
-	}' "${cadd_working_dir}/parallel_dir/parallel.log"
-} > "${HOME}/out/cadd_summary_log/CADD-${DX_JOB_ID}.log"
 
 
 log_message "INFO: Uploading results..."
