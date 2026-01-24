@@ -63,7 +63,7 @@ else
 fi
 
 # Upload results
-if ! dx-upload-all-outputs; then
+if ! dx-upload-all-outputs --parallel; then
 
 	log_message "WARNING: Failed to upload results"
 

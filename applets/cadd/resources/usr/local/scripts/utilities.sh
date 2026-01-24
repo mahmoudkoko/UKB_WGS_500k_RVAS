@@ -707,7 +707,7 @@ run_cadd_on_input_vcfs() {
             --retries 2 \
             --results /opt/CADD/parallel_dir \
             --joblog /opt/CADD/parallel_dir/parallel.log \
-            run_cadd -p -c2 /opt/CADD/input_vcfs/{} \
+            run_cadd -p -c4 /opt/CADD/input_vcfs/{} \
             :::: /opt/CADD/parallel_dir/input_vcfs.txt
 
 }
@@ -784,16 +784,10 @@ for ((idx=0; idx < ${#input_vcfs_list[@]}; ++idx)); do
 	# Get the input filename without path
 	input_file="${input_vcfs_list[$idx]}"
 	
-    # Create output file directories
-	if ! mkdir -p "${HOME}/out/cadd_scores/${idx}" "${HOME}/out/cadd_logs/${idx}" ; then
-		log_message "ERROR: Failed to create output directories for input file: ${input_file}"
-		return 1
-	fi
-
 
 	# Check for TSV file, and move to destination if present	
 	tsv_file="${CADD_WD}/input_vcfs/${input_file%.vcf.gz}.tsv.gz"
-	scores_file="${HOME}/out/cadd_scores/${idx}/${input_file%.vcf.gz}.tsv.gz"
+	scores_file="${HOME}/out/cadd_scores/${input_file%.vcf.gz}.tsv.gz"
 
 	if [[ -f "$tsv_file" ]]; then
 		# Move CADD TSV output to scores directory
@@ -807,7 +801,7 @@ for ((idx=0; idx < ${#input_vcfs_list[@]}; ++idx)); do
 	# Directory structure: parallel_dir/{retry_num}/_path_with_underscores/stdout
 
     # Define log file path
-	log_file="${HOME}/out/cadd_logs/${idx}/${input_file%.vcf.gz}.log"
+	log_file="${HOME}/out/cadd_logs/${input_file%.vcf.gz}.log"
 	# find out how many retries did CADD attempt
 	retries=$(ls -ld ${CADD_WD}/parallel_dir/[0-9]* 2> /dev/null | grep '^d' | wc -l | awk '{print $1}' || echo 1)
 
