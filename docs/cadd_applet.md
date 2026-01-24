@@ -1,345 +1,146 @@
-# Creating the applet
+# Annotating indels with CADD 1.7
 
+## Input files
 
-Create a build directory
-
-
-```bash
-mkdir cadd_v1_7 && cd cadd_v1_7
-```
-
-
-Clone CADD scripts
-
+Start a VM with CWS or TTYD
 
 ```bash
-git clone https://github.com/kircherlab/CADD-scripts.git
-```
-
-
-
-Create docker image
-
-
-
-
-```bash
-sudo tar \
---exclude=/proc \
---exclude=/tmp \
---exclude=/run \
---exclude=/boot \
---exclude=/home/dnanexus \
---exclude=/sys \
---exclude=/bin \
---exclude=/sbin \
---exclude=/opt/dnanexus \
---exclude=/opt/containerd \
--czf /tmp/CADD_v1_7_docker.tar.gz /
-```
-
-
-Import
-
-```bash
-docker import /tmp/CADD_v1_7_docker.tar.gz cadd_scripts:latest
-```
-
-Save
-
-```bash
-docker save cadd_scripts:latest > CADD_v1_7_scripts_docker.tar
-```
-
-Test
-
-```bash
-docker load < CADD_v1_7_scripts_docker.tar
-
-
-docker run \
---pull=never \
---platform linux/amd64 \
-cadd_scripts:latest \
-cadd
-```
-
-
-
-Compress
-
-```bash
-gzip CADD_v1_7_scripts_docker.tar
-```
-
-Upload
-
-```bash
-dx upload CADD_v1_7_scripts_docker.tar.gz --path "$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/envs/"
-```
-
-
-
-
-######
-
-
-Download conda script
-
-```bash
-mkdir resources/home/dnanexus/conda
-
-
-curl -L -O "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh"
-
-curl -O https://raw.githubusercontent.com/apptainer/apptainer/main/tools/install-unprivileged.sh
-
-mv Miniforge3-Linux-x86_64.sh ./resources/home/dnanexus/conda/Miniforge3-Linux-x86_64
-
-mv install-unprivileged.sh ./resources/home/dnanexus/conda/apptainer-install-unprivileged
-
-chmod +x ./resources/home/dnanexus/conda/*
-
-```
-
-
-Create an entry point
-
-
-```bash
-mkdir src/
-```
-
-
-```bash
-cat > src/main.sh <<EOL
-#!/bin/bash
-
-set -e -x -o pipefail
-
-#####################
-# Set up dependencies
-
-# Instsall singularity
-cat \${HOME}/conda/apptainer-install-unprivileged |\\
-bash -s - \${HOME}/conda/  2>&1 > /dev/null
-
-
-# Install conda
-mv \${HOME}/conda/Miniforge3-Linux-x86_64 \${HOME}/conda/Miniforge3-Linux-x86_64.sh
-
-bash \${HOME}/conda/Miniforge3-Linux-x86_64.sh -u -b -p \${HOME}/conda 2>&1 > /dev/null
-
-# Export conda to path
-export PATH=\${HOME}/conda/bin:\${PATH}
-
-# Instsall snakemake
-conda config --set channel_priority strict
-conda install -p \${HOME}/conda/ -y -c conda-forge -c bioconda 'snakemake=8' 2>&1 > /dev/null
-
-
-#########
-
-
-main() {
-
-
-	echo "Downloading ${#input_vcfs_path[@]} input VCFs: "
-
-	printf "%s\n" ${input_vcfs_path[@]}
-
-
-	dx-download-all-inputs --parallel
-
-
-
-	echo "Moving to CADD dir"
-
-	cd "\${HOME}/cadd_dir"
-
-
-	echo "Downloading docker image"
-
-	dx download --no-progress -o ./envs/ \\
-	"\$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/CADD_v1_7.sif" 
-
-
-	echo "Downloading precalculated gnomAD indels scores"
-
-	dx download --no-progress -o ./data/prescored/GRCh38_v1.7/no_anno/ \\
-	"\$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/gnomad.genomes.r4.0.indel.tsv.gz" \\
-	"\$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/gnomad.genomes.r4.0.indel.tsv.gz.tbi" 
-
-
-	# echo "Downloading precalculated WGS SNVs scores"
-
-	# dx download --no-progress -o ./data/prescored/GRCh38_v1.7/no_anno/ \\
-	# "\$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/whole_genome_SNVs.tsv.gz" \\
-	# "\$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/whole_genome_SNVs.tsv.gz.tbi"
-
-
-
-	echo "Downloading annotations. This takes > 1hr"
-
-	dx cat "\$DX_PROJECT_CONTEXT_ID:/Resources/cadd_v1_7_data/GRCh38_v1.7.tar.gz" |\\
-	gunzip |\\
-	tar -xf - -C ./data/annotations/
-
-
-	echo "Annotating VCFs"
-
-	mkdir \${HOME}/parallel_dir/
-
-	N_JOBS=\$(cat \${HOME}/job_input.json  | jq -r '.cadd_jobs' || echo 1 )
-
-	if parallel \\
-	        --jobs "\$N_JOBS" \\
-	        --results "\${HOME}/parallel_dir" \\
-	        --joblog "\${HOME}/parallel_dir/parallel.log" \\
-	        --timeout 300 \\
-	        ./CADD.sh ::: "\${input_vcfs_path[@]}"; then
-
-			echo "All CADD jobs were successful"
-	else
-
-			echo "Some CADD jobs failed"
-
-	fi
-
-
-	echo "Collecting results"
-
-
-	mkdir -p "\${HOME}/out/cadd_scores/"
-
-	for ((v=0;v< \${#input_vcfs_path[@]};++v)); do
-
-		rm "\${input_vcfs_path[\$v]}"
-
-		mv "\${HOME}/in/input_vcfs/\${v}" "\${HOME}/out/cadd_scores/\${v}"
-
-	done
-
-
-
-	mkdir -p "\${HOME}/out/cadd_log/"
-
-	echo "==== Summary ==== " >> "\${HOME}/out/cadd_log/\${DX_JOB_ID}.cadd.log"
-
-	cat "\${HOME}/parallel_dir/parallel.log"  |\\
-	awk -F"\t" 'BEGIN{t=0;f=0;s=0}NR>1{t+=\$4}NR>1{if(\$7==0) ++s ; else ++f}END{print "Pass/Fail: " s"/"f ; printf "Avergage time: %.2fmin\n", t/(NR-1)/60 }' >> "\${HOME}/out/cadd_log/\${DX_JOB_ID}.cadd.log"
-
-	cat "\${HOME}/out/cadd_log/\${DX_JOB_ID}.cadd.log"
-
-	echo "==== Parallel ==== " >> "\${HOME}/out/cadd_log/\${DX_JOB_ID}.cadd.log"
-
-	cat "\${HOME}/parallel_dir/parallel.log" >> "\${HOME}/out/cadd_log/\${DX_JOB_ID}.cadd.log"
-
-	echo "==== Logs ==== " >> "\${HOME}/out/cadd_log/\${DX_JOB_ID}.cadd.log"
-
-	find "\${HOME}/parallel_dir/" -name std* -exec cat {} + >> "\${HOME}/out/cadd_log/\${DX_JOB_ID}.cadd.log"
-
-
-	echo "Uploading results"
-
-	dx-upload-all-outputs
-}
-EOL
-```
-
-
-
-Create a json file for the applet
-
-
-```bash
-cat > dxapp.json <<EOL
-{
-  "name": "ukb_cadd_applet",
-  "title": "CADD Annotation Applet",
-  "summary": "WGS annotation applet. Takes a list of VCFs. Runs a bunch of pre-defined annotations. Creates TSV annotation files.",
-  "version": "1.0.0",
-  "inputSpec":
-    [
-      {
-        "name": "input_vcfs",
-        "label": "Input vcf file IDs",
-        "help": "Array of vcf file IDs",
-        "class": "array:file",
-        "optional": false
-      },
-      {
-        "name": "cadd_jobs",
-        "label": "Parallel jobs",
-        "help": "Number of files to process in parallel",
-        "class": "int",
-        "default": 5,
-        "optional": true
-      }
-    ],
-  "outputSpec":
-    [
-      {
-        "name": "cadd_log",
-        "label": "Log file",
-        "help": "Job log: a text file with summaries and concatenated STDERR files",
-        "class": "file",
-        "patterns": ["*.log"],
-        "optional": true
-      },
-      {
-        "name": "cadd_scores",
-        "label": "Output files",
-        "help": "One tsv file per input VCF",
-        "class": "array:file",
-        "patterns": [".tsv.gz"],
-        "optional": true
-
-      }
-    ],
-  "runSpec":
-    {
-      "file": "src/main.sh",
-      "interpreter": "bash" ,
-      "systemRequirements": {"*": {"instanceType": "mem1_ssd1_v2_x36"} },
-      "distribution": "Ubuntu",
-      "release": "24.04",
-      "version": "0",
-      "execDepends": [{"name": "parallel"}, {"name": "rpm2cpio"}]
-    },
-
-  "access": { "network": ["*"] },
-  "openSource": false
-}
-EOL
-```
-
-
-
-
-
-Compile
-
-```bash
-cadd_applet_id=$(dx build -f -d "$DX_PROJECT_CONTEXT_ID:/Applets/" ./ | jq -r .id)
-```
-
-
-Test with a small file
-
-
-```bash
-cadd_test_vcf_id=$(dx upload --brief ./resources/home/dnanexus/cadd_dir/test/input.vcf.gz)
-```
-
-
-```bash
-cadd_test_job_id=$(dx run ${cadd_applet_id} \
---destination "project-GzKk3XjJZz4ZgXzP2v1029qB:/Scratch/" \
---instance-type "mem1_ssd1_v2_x2" \
---input input_vcfs="project-GzKk3XjJZz4ZgXzP2v1029qB:${cadd_test_vcf_id}" \
---name "CADD: test" \
---brief \
+dx run app-cloud_workstation \
+--instance-type mem1_ssd1_v2_x2 \
 --priority high \
--y)
+--ssh \
+--brief
+```
+
+Install bcftools
+
+```bash
+sudo apt-get install bcftools
+```
+
+
+```bash
+# set to contibutor
+dx-su-contrib
+```
+
+Download and filter the variants for indels; split into chunks of 5k variants
+
+
+```bash
+mkdir cadd_test
+
+for N in "Y"; do
+
+dx cat "Bulk/DRAGEN WGS/DRAGEN population level WGS variants, PLINK format [500k release]/ukb24308_c${N}_b0_v1.pvar" |\
+awk -F' ' 'BEGIN{print "##fileformat=VCFv4.2"}NR==1{gsub(" ","\t")}NR>1{for(c = 6; c<=NF; ++c) $c = "."}{print }' OFS='\t' |\
+bcftools view -V snps --write-index -Oz -o cadd_test/chr${N}.vcf.gz 
+
+
+bcftools +scatter "cadd_test/chr${N}.vcf.gz" -Ob -o cadd_test/ -n5000 --prefix "chr${N}.indels."
+
+rm cadd_test/chr${N}.vcf.gz*
+
+done
+
+```
+
+Upload the VCFs
+
+```bash
+dx upload --no-progress --recursive cadd_test --path "/Temp/"
+```
+
+We will use 'Generate batch inputs' to pull the file IDs 
+
+```bash
+dx generate_batch_inputs \
+--path "Temp/cadd_test" \
+-o "cadd_test/cadd_bcfs" \
+-i cadd_input="chrY.indels.(.*).bcf$"
+```
+
+We will reformat this to squach all lines in one batch
+
+```bash
+(head -n1 cadd_test/cadd_bcfs.0000.tsv;
+cat cadd_test/cadd_bcfs.0000.tsv | \
+tail -n+2 | \
+awk -F'\t' -v OFS="\t" '{gsub(/[\r\n]/,"",$3)}
+NR==1{bcfs=$2;ids=$3;next}
+{bcfs=bcfs","$2;ids=ids","$3}
+END{print "chrY","["bcfs"]","["ids"]"}') > cadd_test/cadd_test_batch.tsv
+```
+
+
+Run the applet
+
+```bash
+dx run Applets/CADD \
+--batch-tsv cadd_test/cadd_test_batch.tsv \
+--destination "/Temp/cadd_test/" \
+--priority high \
+--brief \
+-y
+```
+
+This will take a while. Contiue with the remaining chromosomes
+
+
+```bash
+mkdir cadd_input
+
+for N in {22..1}; do
+# If adding chrX as well, note that it contains PAR contigs which needs special handling (e.g., replace with X and sort before saving as vcf/bcf). 
+
+dx cat "Bulk/DRAGEN WGS/DRAGEN population level WGS variants, PLINK format [500k release]/ukb24308_c${N}_b0_v1.pvar" |\
+awk -F' ' 'BEGIN{print "##fileformat=VCFv4.2"}NR==1{gsub(" ","\t")}NR>1{for(c = 6; c<=NF; ++c) $c = "."}{print }' OFS='\t' |\
+bcftools view -V snps --write-index -Oz -o chr${N}.vcf.gz &> /dev/null
+
+
+bcftools +scatter "chr${N}.vcf.gz" -Ob -o cadd_input/ -n5000 --prefix "chr${N}.indels."
+
+rm chr${N}.vcf.gz*
+
+done &
+```
+
+This will take a while. Once done, upload the VCFs
+
+```bash
+dx upload --no-progress --brief --recursive cadd_input --path "/Temp/" &> uploads.log &
+```
+
+This also takes a while (several hours). Consider exiting the terminal and connecting back later on. Make sure the time out is long enough (e.g., `dx-set-timeout 24h`).
+
+
+Once all files are uploaded, generate batch input tables
+
+```bash
+mkdir cadd_batch_files
+
+echo -e "batch ID\tcadd_input\tcadd_input ID" > cadd_batch_input.tsv
+
+# add '|X' to regexp to get chrX as well
+dx find data --json --class file --state closed --path "/Temp/cadd_input" \
+--name "^chr[1-9]|1[0-9]|2[0-2]\.indels\..*\.bcfs$" --name-mode regexp |\
+jq -r '
+    [range(0; length; 500) as $i | .[$i:$i+500]] | 
+    to_entries[] | 
+    "\(.key + 1)\t[" + ([.value[].describe.name] | join(",")) + "]\t[" + ([.value[].id] | join(",")) + "]"
+  ' >> cadd_batch_input.tsv
+
+# There are about 80 batches (jobs)
+wc -l cadd_batch_input.tsv
+
+# This allows 144GB/25 = 5GB of mem per job. The mem requirement isn't predictable but the applet will retry files that failed.
+
+dx run Applets/CADD \
+--batch-tsv cadd_batch_input.tsv \
+--input cadd_jobs=25 \
+--instance-type mem1_ssd1_v2_x72 \
+--destination "Scratch/cadd_indels/" \
+--priority high \
+--brief \
+-y
 ```

@@ -704,7 +704,8 @@ run_cadd_on_input_vcfs() {
         parallel \
             --jobs "$CADD_JOBS" \
             --timeout "$CADD_TIMEOUT" \
-            --retries 2 \
+            --memfree 8G \
+            --retries 3 \
             --results /opt/CADD/parallel_dir \
             --joblog /opt/CADD/parallel_dir/parallel.log \
             run_cadd -p -c4 /opt/CADD/input_vcfs/{} \
