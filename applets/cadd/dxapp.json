@@ -51,7 +51,7 @@
         "name": "cadd_summary_log",
         "label": "Summary log file",
         "help": "Job log: a text file with summary of CADD annotation jobs",
-        "class": "file",
+        "class": "array:file",
         "patterns": ["*.log"],
         "optional": true
       },

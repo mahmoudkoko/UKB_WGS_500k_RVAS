@@ -704,7 +704,7 @@ run_cadd_on_input_vcfs() {
         parallel \
             --jobs "$CADD_JOBS" \
             --timeout "$CADD_TIMEOUT" \
-            --memfree 8G \
+            --memfree 10G \
             --retries 3 \
             --results /opt/CADD/parallel_dir \
             --joblog /opt/CADD/parallel_dir/parallel.log \
@@ -715,9 +715,13 @@ run_cadd_on_input_vcfs() {
 
 collect_cadd_output_files() {
 
-	local input_vcfs_list=() 
+	local input_vcfs_names=()
+    local input_vcfs_prefixes=()
+    local input_vcfs_ids=()
 	local idx
 	local input_file
+    local input_prefix
+    local input_id
 	local tsv_file
 	local scores_file
 	local log_file
@@ -730,9 +734,19 @@ if [[ ! -f "${CADD_WD}/parallel_dir/parallel.log" ]]; then
 	log_message "ERROR: parallel.log file not found"
 	return 1
 
-elif ! mapfile -t input_vcfs_list < "${CADD_WD}/parallel_dir/input_vcfs.txt" ; then
+elif ! mapfile -t input_vcfs_names < "${CADD_WD}/.vcf_names" ; then
 
-	log_message "ERROR: Could not read input list"
+	log_message "ERROR: Could not read input names list"
+	return 1
+
+elif ! mapfile -t input_vcfs_prefixes < "${CADD_WD}/.vcf_prefixes" ; then
+
+	log_message "ERROR: Could not read input prefixes list"
+	return 1
+
+elif ! mapfile -t input_vcfs_ids < "${CADD_WD}/.vcf_ids" ; then
+
+	log_message "ERROR: Could not read input ids list"
 	return 1
 
 elif ! mkdir -p "${HOME}/out/cadd_summary_log/" "${HOME}/out/cadd_scores/" "${HOME}/out/cadd_logs/"; then
@@ -773,28 +787,33 @@ fi
 		printf "%-8s %-40s %-12.2f %-10s %-10d\n", job_num, filename, runtime, status, exit_code
 	}' "${CADD_WD}/parallel_dir/parallel.log"
 
-) >  "${HOME}/out/cadd_summary_log/CADD-${DX_JOB_ID}.log"
+) >  "${HOME}/out/cadd_summary_log/CADD-${DX_JOB_ID}.summary.log"
 
 
 # Move TSV files and logs to output directories
 
 # Read input VCF filenames into an array
-for ((idx=0; idx < ${#input_vcfs_list[@]}; ++idx)); do
+for ((idx=0; idx < ${#input_vcfs_names[@]}; ++idx)); do
 	# Create output subdirectories
 
 	# Get the input filename without path
-	input_file="${input_vcfs_list[$idx]}"
-	
+	input_file="${input_vcfs_names[$idx]}"
+    input_prefix="${input_vcfs_prefixes[$idx]}"
+	input_id="${input_vcfs_ids[$idx]}"
+
+    # Define output file paths
+	scores_file="${HOME}/out/cadd_scores/${input_prefix}.cadd.tsv.gz"
+	log_file="${HOME}/out/cadd_logs/${input_prefix}.cadd.log"
 
 	# Check for TSV file, and move to destination if present	
-	tsv_file="${CADD_WD}/input_vcfs/${input_file%.vcf.gz}.tsv.gz"
-	scores_file="${HOME}/out/cadd_scores/${input_file%.vcf.gz}.tsv.gz"
-
+	tsv_file="${CADD_WD}/input_vcfs/${input_prefix}.cadd.tsv.gz"
 	if [[ -f "$tsv_file" ]]; then
 		# Move CADD TSV output to scores directory
 		mv "$tsv_file" "$scores_file"
+        echo "${input_file}" "${input_id}" >>  "${HOME}/out/cadd_summary_log/CADD-${DX_JOB_ID}.pass.log"
 	else
 		log_message "WARNING: CADD output TSV file not found: ${tsv_file}"
+        echo "${input_file}" "${input_id}" >>  "${HOME}/out/cadd_summary_log/CADD-${DX_JOB_ID}.fail.log"
 	fi
 
 	# Concatenate stdout and stderr into a single log file named after the input
@@ -802,7 +821,6 @@ for ((idx=0; idx < ${#input_vcfs_list[@]}; ++idx)); do
 	# Directory structure: parallel_dir/{retry_num}/_path_with_underscores/stdout
 
     # Define log file path
-	log_file="${HOME}/out/cadd_logs/${input_file%.vcf.gz}.log"
 	# find out how many retries did CADD attempt
 	retries=$(ls -ld ${CADD_WD}/parallel_dir/[0-9]* 2> /dev/null | grep '^d' | wc -l | awk '{print $1}' || echo 1)
 
