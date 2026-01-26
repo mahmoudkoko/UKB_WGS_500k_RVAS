@@ -238,7 +238,7 @@ jq -r '
 chrY will have 3 batches
 
 ```bash
-wc -l ./cadd_batch_files/cadd_test_batch.tsv
+tail -n+2 ./cadd_batch_files/cadd_test_batch.tsv | wc -l
 ```
 
 
@@ -253,6 +253,8 @@ dx build -f -d 'Applets/CADD' --brief UKB_WGS_500k_RVAS/applets/cadd/
 Run the applet with the test batch file
 
 ```bash
+dx mkdir -p "/Scratch/cadd_results/"
+
 dx run Applets/CADD \
 --batch-tsv cadd_batch_files/cadd_test_batch.tsv \
 --destination "/Scratch/cadd_results/" \
@@ -261,28 +263,33 @@ dx run Applets/CADD \
 -y
 ```
 
-This will take a while (> 2hrs). 
+This will take a while (about 2hrs). 
 
-If all is fine, submit the remaining files.
+Check the log files. If all is fine, submit the remaining files.
 
 
 ```bash
+
+# add '|Y' to regexp to get chrY as well
+dx find data --json --class file --state closed --path "/Scratch/cadd_input" \
+--name "^chr[1-9]|1[0-9]|2[0-2]|X\.indels\..*\.bcfs$" --name-mode regexp > ./cadd_batch_files/cadd_inputs.json
+
 echo -e "batch ID\tcadd_input\tcadd_input ID" > ./cadd_batch_files/cadd_batch_input.tsv
 
-# add '|X' to regexp to get chrX as well
-dx find data --json --class file --state closed --path "/Scratch/cadd_input" \
---name "^chr[1-9]|1[0-9]|2[0-2]\.indels\..*\.bcfs$" --name-mode regexp |\
+# create batches of 400 files
+cat ./cadd_batch_files/cadd_inputs.json |\
 jq -r '
-    [range(0; length; 100) as $i | .[$i:$i+100]] | 
+    [range(0; length; 400) as $i | .[$i:$i+400]] | 
     to_entries[] | 
     "\(.key + 1)\t[" + ([.value[].describe.name] | join(",")) + "]\t[" + ([.value[].id] | join(",")) + "]"
   ' >> ./cadd_batch_files/cadd_batch_input.tsv
 ```
 
 
-There are about 380 batches.
+There should be about a 100 batches of 400 files.
+
 ```bash
-wc -l ./cadd_batch_files/cadd_batch_input.tsv
+tail -n+2 ./cadd_batch_files/cadd_batch_input.tsv | wc -l
 ```
 
 Sumbit all batches. The platform will limit the number of ongoing jobs but the remaining jobs will wait in the queue. Run on high priority if you can afford it (otherwise, this will take long to finish scheduling).
@@ -291,9 +298,10 @@ Sumbit all batches. The platform will limit the number of ongoing jobs but the r
 dx run Applets/CADD \
 --batch-tsv ./cadd_batch_files/cadd_batch_input.tsv \
 --destination "Scratch/cadd_results/" \
---priority high \
+--priority low \
 --brief \
--y
+-y |\
+tr ',' '\n' > cadd_batch_files/cadd_batch_jobs.txt
 ```
 
 
@@ -301,4 +309,43 @@ dx run Applets/CADD \
 
 If the job has failed, it is likley that it hit mem limit. Simply reschedule with smaller numer of parallel annotation tasks or use a larger machine.
 
-It is possible that a few files per job fail, rather than the whole job. There are log files that will list the names of failing files. Use those to create new batches and resubmit. Ideally, reduce parallel tasks and/or use a larger machine. Also consider adjusting the timeout for parallel tasks. These files will likley take longer to run and require more mem. The log files can help identifying the issue and making sensible choices.
+It is more likely that a few files per job fail, rather than the whole job. There are log files that will list the names of failing files. 
+
+To get a list of these log files:
+
+```bash
+cadd_failed_files_json=$(dx find data --brief --json --class file --state closed --path "/Scratch/cadd_results" \
+--name "^CADD\..*\.fail\.log$" --name-mode regexp)
+```
+
+If the string isn't an empty array, extract the IDs and read the files to get failed input names
+
+```bash
+# Check if there are any failed log files
+if [[ $(echo "$cadd_failed_files_json" | jq 'length') -gt 0 ]]; then
+
+    # Extract file IDs and download the log files
+    echo "$cadd_failed_files_json" | jq -r '.[].id' | while read -r file_id; do
+        dx cat "$file_id"
+    done > cadd_failed_inputs.txt
+
+    # Show unique failed input file names
+    sort -u cadd_failed_inputs.txt
+
+else
+    echo "No failed files found."
+fi
+```
+
+To get the file IDs of the failed inputs (for resubmission):
+
+```bash
+# Get file IDs from the failed input names
+if [[ -s cadd_failed_inputs.txt ]]; then
+    while read -r failed_name; do
+        dx find data --brief --path "/Scratch/cadd_input" --name "$failed_name"
+    done < <(sort -u cadd_failed_inputs.txt)
+fi
+```
+
+Use those to create new batches and resubmit. Ideally, reduce parallel tasks and/or use a larger machine. Also consider adjusting the timeout for parallel tasks. These files will likley take longer to run and require more mem. The log files can help identifying the issue and making sensible choices.
